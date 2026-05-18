@@ -137,21 +137,33 @@ function initBot() {
       );
     }
 
+    // Decode JWT to extract member_id, visitor_id, etc.
+    const bbApi = new BigBasketAPI(token);
+    const tokenInfo = bbApi.getTokenInfo();
+
     userOps.createUser(telegramId);
     userOps.updateUserTokens(telegramId, {
       accessToken: token,
-      refreshToken: null,
-      memberId: null,
-      visitorId: null,
+      refreshToken: tokenInfo?.tdlToken || null,
+      memberId: tokenInfo?.memberId ? String(tokenInfo.memberId) : null,
+      visitorId: tokenInfo?.visitorId ? String(tokenInfo.visitorId) : null,
     });
 
     const sessionId = uuidv4();
     sessionOps.createSession(sessionId, telegramId);
 
-    await bot.sendMessage(chatId,
-      `✅ Token set successfully! You're now authenticated.\n\n` +
-      `Tap below to start shopping:`,
-    );
+    let statusMsg = `✅ Token set successfully! You're now authenticated.\n\n`;
+    if (tokenInfo) {
+      statusMsg += `📋 Decoded from JWT:\n`;
+      statusMsg += `• Member ID: ${tokenInfo.memberId || 'unknown'}\n`;
+      statusMsg += `• Visitor ID: ${tokenInfo.visitorId || 'unknown'}\n`;
+      statusMsg += `• Device: ${tokenInfo.deviceId || 'unknown'}\n`;
+      statusMsg += `• Expires: ${tokenInfo.expiresAt || 'unknown'}\n`;
+      statusMsg += `• Expired: ${tokenInfo.isExpired ? '⚠️ YES' : '✅ No'}\n\n`;
+    }
+    statusMsg += `Tap below to start shopping:`;
+
+    await bot.sendMessage(chatId, statusMsg);
     await sendMiniAppButton(chatId, msg.from.first_name || 'User');
   });
 

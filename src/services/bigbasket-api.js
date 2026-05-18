@@ -17,25 +17,73 @@ const { BB_BASE_URL, DEFAULT_HEADERS, ENDPOINTS } = require('../config/constants
  * 3. Update headers (especially X-Tracker, cookies, fingerprint)
  */
 class BigBasketAPI {
+  /**
+   * @param {string|null} accessToken - Full JWT token (contains mid, vid, TDLTOKEN, refresh_token inside)
+   * @param {string|null} visitorId - Visitor ID (extracted from JWT vid field or auto-generated)
+   * 
+   * BigBasket JWT Payload Structure:
+   * {
+   *   "chaff": "random_string",
+   *   "time": 1739099619.3279107,
+   *   "mid": 13758350,           // Member ID
+   *   "vid": 1254087522695103232, // Visitor ID (numeric)
+   *   "device_id": "WEB",
+   *   "source_id": 1,
+   *   "ec_list": [3,4,10,...],    // Enabled channel list
+   *   "TDLTOKEN": "uuid",        // TDL session token
+   *   "refresh_token": "uuid",   // For token refresh
+   *   "tdl_expiry": 1779704418,
+   *   "exp": 1794879619,         // Token expiry timestamp
+   *   "device_model": "WEB",
+   *   "is_internal_user": false
+   * }
+   */
   constructor(accessToken = null, visitorId = null) {
     this.accessToken = accessToken;
-    this.visitorId = visitorId || this._generateVisitorId();
+    this.jwtPayload = accessToken ? this._decodeJWT(accessToken) : null;
+    
+    // Extract vid from JWT payload if not provided
+    this.visitorId = visitorId || 
+      (this.jwtPayload?.vid ? String(this.jwtPayload.vid) : this._generateVisitorId());
+    
+    // Extract member ID from JWT
+    this.memberId = this.jwtPayload?.mid ? String(this.jwtPayload.mid) : null;
+    
+    // Extract TDLTOKEN from JWT (used as additional auth header)
+    this.tdlToken = this.jwtPayload?.TDLTOKEN || null;
+
+    // Build headers matching BigBasket web client behavior
+    const headers = {
+      ...DEFAULT_HEADERS,
+      'X-Visitor-Id': this.visitorId,
+    };
+
+    // When authenticated, BigBasket web uses these headers
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+      headers['X-BB-Token'] = accessToken;
+    }
+    if (this.tdlToken) {
+      headers['X-TDLTOKEN'] = this.tdlToken;
+    }
+    if (this.memberId) {
+      headers['X-Member-Id'] = this.memberId;
+    }
+
+    // Cookie-style auth (BigBasket web uses cookies alongside headers)
+    if (accessToken) {
+      headers['Cookie'] = `_bb_token=${accessToken}; _bb_vid=${this.visitorId}; _bb_mid=${this.memberId || ''}`;
+    }
 
     this.client = axios.create({
       baseURL: BB_BASE_URL,
       timeout: 30000,
-      headers: {
-        ...DEFAULT_HEADERS,
-        'X-Visitor-Id': this.visitorId,
-        ...(accessToken && { 'X-BB-Token': accessToken }),
-        ...(accessToken && { 'Authorization': `Bearer ${accessToken}` }),
-      },
+      headers,
     });
 
     // Request interceptor - log all outgoing requests
     this.client.interceptors.request.use((config) => {
       console.log(`[BB-API] >> ${config.method?.toUpperCase()} ${config.url}`);
-      console.log(`[BB-API] >> Headers:`, JSON.stringify(config.headers, null, 2));
       if (config.data) console.log(`[BB-API] >> Body:`, JSON.stringify(config.data));
       return config;
     });
@@ -50,19 +98,60 @@ class BigBasketAPI {
       (error) => {
         console.error(`[BB-API] !! ERROR ${error.response?.status} - ${error.config?.url}`);
         console.error(`[BB-API] !! Response:`, JSON.stringify(error.response?.data || error.message));
-        console.error(`[BB-API] !! Headers sent:`, JSON.stringify(error.config?.headers));
         throw error;
       }
     );
   }
 
+  /**
+   * Decode JWT payload (base64url decode the middle segment)
+   * No verification needed - we just need the claims
+   */
+  _decodeJWT(token) {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      
+      // Base64url decode the payload
+      let payload = parts[1];
+      payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+      // Add padding if needed
+      while (payload.length % 4) payload += '=';
+      
+      const decoded = Buffer.from(payload, 'base64').toString('utf-8');
+      return JSON.parse(decoded);
+    } catch (e) {
+      console.error('[BB-API] Failed to decode JWT:', e.message);
+      return null;
+    }
+  }
+
+  /**
+   * Check if the current token is expired
+   */
+  isTokenExpired() {
+    if (!this.jwtPayload?.exp) return true;
+    return Date.now() / 1000 > this.jwtPayload.exp;
+  }
+
+  /**
+   * Get token info for debugging
+   */
+  getTokenInfo() {
+    if (!this.jwtPayload) return null;
+    return {
+      memberId: this.jwtPayload.mid,
+      visitorId: this.jwtPayload.vid,
+      deviceId: this.jwtPayload.device_id,
+      tdlToken: this.jwtPayload.TDLTOKEN,
+      expiresAt: new Date(this.jwtPayload.exp * 1000).toISOString(),
+      isExpired: this.isTokenExpired(),
+    };
+  }
+
   _generateVisitorId() {
-    // BigBasket uses a UUID-like visitor ID
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
+    // BigBasket uses a large numeric visitor ID (19 digits)
+    return String(Math.floor(Math.random() * 9000000000000000000) + 1000000000000000000);
   }
 
   // ==================== AUTHENTICATION ====================
@@ -201,33 +290,36 @@ class BigBasketAPI {
         const response = await this.client.post(attempt.url, attempt.payload);
         const data = response.data;
 
-        // Extract tokens from response (BigBasket uses various keys)
+        // BigBasket returns a JWT token that contains mid, vid, refresh_token in the payload
         const accessToken = data.access_token || data.token || data.auth_token || 
                            data.member?.access_token || data.data?.access_token;
-        const refreshToken = data.refresh_token || data.data?.refresh_token;
-        const memberId = data.member_id || data.user_id || data.mid || 
-                        data.member?.id || data.data?.member_id;
-        const visitorId = data.visitor_id || data.vid || data.data?.visitor_id || this.visitorId;
-        const userName = data.name || data.user_name || data.member?.name || 
-                        data.data?.name || data.first_name;
 
         if (accessToken) {
-          console.log(`[BB-API] Auth successful via ${attempt.url}`);
+          // Decode the JWT to extract embedded credentials
+          const jwtPayload = this._decodeJWT(accessToken);
+          const memberId = jwtPayload?.mid || data.member_id || data.user_id || data.mid;
+          const visitorId = jwtPayload?.vid ? String(jwtPayload.vid) : (data.visitor_id || this.visitorId);
+          const refreshToken = jwtPayload?.refresh_token || data.refresh_token;
+          const userName = data.name || data.user_name || data.member?.name || data.first_name || 'User';
+
+          console.log(`[BB-API] Auth successful via ${attempt.url} | mid=${memberId} vid=${visitorId}`);
           return {
             success: true,
-            data: { accessToken, refreshToken, memberId, visitorId, userName },
+            data: { accessToken, refreshToken, memberId: String(memberId), visitorId, userName },
           };
         }
 
         // Some endpoints return success but with nested data
         if (data.status === 'success' || data.success === true) {
+          const nestedToken = data.token || data.session_token;
+          const jwtPayload = nestedToken ? this._decodeJWT(nestedToken) : null;
           return {
             success: true,
             data: {
-              accessToken: data.token || data.session_token || 'token_from_response',
-              refreshToken: data.refresh_token || null,
-              memberId: data.member_id || data.id || null,
-              visitorId: this.visitorId,
+              accessToken: nestedToken || 'token_from_response',
+              refreshToken: jwtPayload?.refresh_token || data.refresh_token || null,
+              memberId: String(jwtPayload?.mid || data.member_id || data.id || ''),
+              visitorId: jwtPayload?.vid ? String(jwtPayload.vid) : this.visitorId,
               userName: data.name || 'User',
             },
           };
