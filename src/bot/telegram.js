@@ -123,7 +123,8 @@ function initBot() {
     );
   });
 
-  // /settoken command - manually inject BigBasket token (from mitmproxy capture)
+  // /settoken command - manually inject BigBasket token (from browser/mitmproxy capture)
+  // Supports both JWT tokens (eyJhb...) and opaque encrypted tokens
   bot.onText(/\/settoken (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id;
@@ -132,14 +133,15 @@ function initBot() {
     if (!token || token.length < 10) {
       return bot.sendMessage(chatId, 
         '❌ Invalid token. Usage:\n`/settoken YOUR_BB_ACCESS_TOKEN`\n\n' +
-        'Get your token by intercepting BigBasket app traffic with mitmproxy.',
+        'Get your token from BigBasket browser cookies or mitmproxy.',
         { parse_mode: 'Markdown' }
       );
     }
 
-    // Decode JWT to extract member_id, visitor_id, etc.
+    // Try to decode as JWT (eyJhb... format) or treat as opaque token
     const bbApi = new BigBasketAPI(token);
     const tokenInfo = bbApi.getTokenInfo();
+    const isJWT = token.startsWith('eyJ') && token.split('.').length === 3;
 
     userOps.createUser(telegramId);
     userOps.updateUserTokens(telegramId, {
@@ -153,13 +155,17 @@ function initBot() {
     sessionOps.createSession(sessionId, telegramId);
 
     let statusMsg = `✅ Token set successfully! You're now authenticated.\n\n`;
-    if (tokenInfo) {
+    if (isJWT && tokenInfo) {
       statusMsg += `📋 Decoded from JWT:\n`;
       statusMsg += `• Member ID: ${tokenInfo.memberId || 'unknown'}\n`;
       statusMsg += `• Visitor ID: ${tokenInfo.visitorId || 'unknown'}\n`;
       statusMsg += `• Device: ${tokenInfo.deviceId || 'unknown'}\n`;
       statusMsg += `• Expires: ${tokenInfo.expiresAt || 'unknown'}\n`;
       statusMsg += `• Expired: ${tokenInfo.isExpired ? '⚠️ YES' : '✅ No'}\n\n`;
+    } else {
+      statusMsg += `📋 Token type: Opaque/Encrypted\n`;
+      statusMsg += `• Length: ${token.length} chars\n`;
+      statusMsg += `• Format: BigBasket encrypted session token\n\n`;
     }
     statusMsg += `Tap below to start shopping:`;
 

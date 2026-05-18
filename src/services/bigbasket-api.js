@@ -40,7 +40,10 @@ class BigBasketAPI {
    */
   constructor(accessToken = null, visitorId = null) {
     this.accessToken = accessToken;
-    this.jwtPayload = accessToken ? this._decodeJWT(accessToken) : null;
+    
+    // Detect token type: JWT (eyJ...) vs opaque/encrypted
+    this.isJWT = accessToken && accessToken.startsWith('eyJ') && accessToken.split('.').length === 3;
+    this.jwtPayload = this.isJWT ? this._decodeJWT(accessToken) : null;
     
     // Extract vid from JWT payload if not provided
     this.visitorId = visitorId || 
@@ -58,10 +61,17 @@ class BigBasketAPI {
       'X-Visitor-Id': this.visitorId,
     };
 
-    // When authenticated, BigBasket web uses these headers
+    // When authenticated, BigBasket uses different header strategies based on token type
     if (accessToken) {
-      headers['Authorization'] = `Bearer ${accessToken}`;
-      headers['X-BB-Token'] = accessToken;
+      if (this.isJWT) {
+        // JWT token: send as Bearer and X-BB-Token
+        headers['Authorization'] = `Bearer ${accessToken}`;
+        headers['X-BB-Token'] = accessToken;
+      } else {
+        // Opaque/encrypted token: send as cookie and custom headers
+        // BigBasket web client sends these as cookie values
+        headers['X-BB-Token'] = accessToken;
+      }
     }
     if (this.tdlToken) {
       headers['X-TDLTOKEN'] = this.tdlToken;
@@ -72,7 +82,12 @@ class BigBasketAPI {
 
     // Cookie-style auth (BigBasket web uses cookies alongside headers)
     if (accessToken) {
-      headers['Cookie'] = `_bb_token=${accessToken}; _bb_vid=${this.visitorId}; _bb_mid=${this.memberId || ''}`;
+      if (this.isJWT) {
+        headers['Cookie'] = `_bb_token=${accessToken}; _bb_vid=${this.visitorId}; _bb_mid=${this.memberId || ''}`;
+      } else {
+        // Opaque token likely goes in a different cookie name
+        headers['Cookie'] = `_bb_cid=${accessToken}; _bb_token=${accessToken}; _bb_vid=${this.visitorId}`;
+      }
     }
 
     this.client = axios.create({
