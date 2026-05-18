@@ -66,26 +66,41 @@ module.exports = {
     'sec-fetch-site': 'same-origin',
   },
 
-  // API Endpoint paths (captured from BigBasket v8.29.1 traffic)
+  // API Endpoint paths (captured from BigBasket v8.29.1 real traffic)
   ENDPOINTS: {
-    // ========== AUTHENTICATION ==========
+    // ========== AUTHENTICATION (CONFIRMED from analytics decode) ==========
     AUTH: {
-      // Login - Send OTP (captured: POST /mapi/v4.2.0/login/otp-send/)
-      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/mapi/v4.2.0/login/otp-send/',
-      // Verify OTP (captured: POST /mapi/v4.2.0/login/otp-verify/)
-      VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/mapi/v4.2.0/login/otp-verify/',
-      // Refresh token
-      REFRESH_TOKEN: '/mapi/v4.2.0/login/refresh-token/',
-      // Logout
-      LOGOUT: '/mapi/v4.2.0/login/logout/',
+      // Unified Login - handles both OTP send & verify in one endpoint
+      // Confirmed: POST /member-tdl/v3/member/unified-login/
+      // Error code HU4011 = invalid OTP, HTTP 400
+      UNIFIED_LOGIN: '/member-tdl/v3/member/unified-login/',
+      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/member-tdl/v3/member/unified-login/',
+      VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/member-tdl/v3/member/unified-login/',
+      REFRESH_TOKEN: '/member-tdl/v3/member/refresh-token/',
+      LOGOUT: '/member-tdl/v3/member/logout/',
     },
 
-    // ========== UI SERVICE (captured from real traffic) ==========
+    // ========== UI SERVICE (CONFIRMED from real captured traffic) ==========
     UI_SERVICE: {
-      // GET /ui-svc/v2/header/ - Door info, address, delivery config
+      // GET /ui-svc/v2/header/ - Door info, address, delivery config (CONFIRMED)
       HEADER: '/ui-svc/v2/header/',
-      // GET /ui-svc/v1/app-data - Full app config, categories, layout
+      // GET /ui-svc/v1/app-data - Full app config, categories, layout (CONFIRMED)
       APP_DATA: '/ui-svc/v1/app-data',
+      // GET /ui-svc/v1/member/details - Member profile, wallet (CONFIRMED)
+      MEMBER_DETAILS: '/ui-svc/v1/member/details',
+      // POST /ui-svc/v1/set-current-delivery-address (CONFIRMED from error analytics)
+      SET_ADDRESS: '/ui-svc/v1/set-current-delivery-address',
+      // GET /ui-svc/v1/serviceable/ (CONFIRMED from error analytics)
+      SERVICEABLE: '/ui-svc/v1/serviceable/',
+      // GET /ui-svc/v1/page/dynamic (CONFIRMED from app-data allowed_apis_to_trace)
+      DYNAMIC_PAGE: '/ui-svc/v1/page/dynamic',
+    },
+
+    // ========== LISTING SERVICE (CONFIRMED from app-data allowed_apis_to_trace) ==========
+    LISTING: {
+      SHORT_LIST: '/listing-svc/v1/short-list',
+      WIDGET: '/listing-svc/v2/widget',
+      SHORT_LIST_PRODUCTS: '/listing-svc/v1/short-list-products',
     },
 
     // ========== HOME & NAVIGATION ==========
