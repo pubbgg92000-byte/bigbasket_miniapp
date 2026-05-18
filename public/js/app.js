@@ -55,40 +55,48 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initApp() {
-  // Init Telegram WebApp
-  if (tg) {
-    tg.ready();
-    tg.expand();
-    telegramId = tg.initDataUnsafe?.user?.id;
-    
-    // Apply Telegram theme
-    document.body.style.backgroundColor = tg.themeParams?.bg_color || '#ffffff';
-  }
-
-  // Try to create session with backend
-  if (telegramId) {
-    try {
-      const response = await apiCall('/session/create', 'POST', {
-        telegram_id: telegramId,
-        init_data: tg?.initData,
-      });
-      if (response.success) {
-        sessionId = response.session_id;
-      }
-    } catch (e) {
-      console.log('Running in demo mode');
+  try {
+    // Init Telegram WebApp
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      telegramId = tg.initDataUnsafe?.user?.id;
+      
+      // Apply Telegram theme
+      document.body.style.backgroundColor = tg.themeParams?.bg_color || '#ffffff';
+      document.body.style.color = tg.themeParams?.text_color || '#1a1a1a';
     }
+
+    // Try to create session with backend
+    if (telegramId) {
+      try {
+        const response = await apiCall('/session/create', 'POST', {
+          telegram_id: telegramId,
+          init_data: tg?.initData,
+        });
+        if (response.success) {
+          sessionId = response.session_id;
+        }
+      } catch (e) {
+        console.log('Session create failed, running in demo mode');
+      }
+    }
+
+    // Setup navigation
+    setupNavigation();
+    setupSearch();
+
+    // Load initial data (always falls back to demo)
+    await loadHomePage();
+  } catch (e) {
+    console.error('Init error:', e);
+    // Force load demo data even if something fails
+    renderHomeCategories(DEMO_CATEGORIES.slice(0, 8));
+    renderProducts(DEMO_PRODUCTS.slice(0, 6), 'home-products');
+  } finally {
+    // ALWAYS hide loading screen
+    document.getElementById('loading-screen').classList.add('hidden');
   }
-
-  // Setup navigation
-  setupNavigation();
-  setupSearch();
-
-  // Load initial data
-  await loadHomePage();
-
-  // Hide loading screen
-  document.getElementById('loading-screen').classList.add('hidden');
 }
 
 // ==================== API ====================
@@ -100,13 +108,27 @@ async function apiCall(endpoint, method = 'GET', body = null) {
     'Content-Type': 'application/json',
   };
   if (sessionId) headers['X-Session-Id'] = sessionId;
-  if (telegramId) headers['X-Telegram-Id'] = telegramId;
+  if (telegramId) headers['X-Telegram-Id'] = String(telegramId);
 
   const options = { method, headers };
   if (body) options.body = JSON.stringify(body);
 
-  const response = await fetch(`${API_BASE}${endpoint}`, options);
-  return response.json();
+  // Add timeout to prevent hanging
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  options.signal = controller.signal;
+
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}`, options);
+    clearTimeout(timeoutId);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.json();
+  } catch (e) {
+    clearTimeout(timeoutId);
+    throw e;
+  }
 }
 
 // ==================== NAVIGATION ====================
@@ -209,21 +231,22 @@ async function performSearch() {
 // ==================== HOME PAGE ====================
 
 async function loadHomePage() {
-  // Try API first
-  try {
-    const data = await apiCall('/home');
-    if (data.categories) {
-      renderHomeCategories(data.categories.slice(0, 8));
-    }
-    if (data.products) {
-      renderProducts(data.products.slice(0, 6), 'home-products');
-    }
-    return;
-  } catch (e) {}
-
-  // Demo mode
+  // Always render demo data first (instant UI)
   renderHomeCategories(DEMO_CATEGORIES.slice(0, 8));
   renderProducts(DEMO_PRODUCTS.slice(0, 6), 'home-products');
+
+  // Then try API to overlay with real data
+  try {
+    const data = await apiCall('/home');
+    if (data && data.categories) {
+      renderHomeCategories(data.categories.slice(0, 8));
+    }
+    if (data && data.products) {
+      renderProducts(data.products.slice(0, 6), 'home-products');
+    }
+  } catch (e) {
+    console.log('API unavailable, using demo data');
+  }
 }
 
 function renderHomeCategories(categories) {
@@ -239,22 +262,30 @@ function renderHomeCategories(categories) {
 // ==================== CATEGORIES ====================
 
 async function loadCategories() {
-  let categories = DEMO_CATEGORIES;
-
-  try {
-    const data = await apiCall('/categories');
-    if (data.categories || Array.isArray(data)) {
-      categories = data.categories || data;
-    }
-  } catch (e) {}
-
+  // Render demo immediately
   const container = document.getElementById('categories-list');
-  container.innerHTML = categories.map(cat => `
+  container.innerHTML = DEMO_CATEGORIES.map(cat => `
     <div class="category-item" onclick="openCategory('${cat.id}', '${cat.name}')">
       <span class="category-icon">${cat.icon || '📦'}</span>
       <span class="category-name">${cat.name}</span>
     </div>
   `).join('');
+
+  // Try API overlay
+  try {
+    const data = await apiCall('/categories');
+    const categories = data.categories || (Array.isArray(data) ? data : null);
+    if (categories && categories.length > 0) {
+      container.innerHTML = categories.map(cat => `
+        <div class="category-item" onclick="openCategory('${cat.id}', '${cat.name}')">
+          <span class="category-icon">${cat.icon || '📦'}</span>
+          <span class="category-name">${cat.name}</span>
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    console.log('Categories API unavailable');
+  }
 }
 
 function openCategory(categoryId, categoryName) {
