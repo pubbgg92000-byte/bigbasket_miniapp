@@ -1,6 +1,13 @@
 /**
  * BigBasket API Configuration
- * Reverse-engineered from BigBasket Android App & Web traffic
+ * Based on real captured traffic from BigBasket Android App v8.29.1
+ * 
+ * Captured endpoints from mitmproxy interception:
+ * - Base: https://www.bigbasket.com
+ * - UI Service: /ui-svc/v1/ and /ui-svc/v2/
+ * - Mobile API: /mapi/v4.2.0/
+ * - Analytics: prod-collector.bigbasket.com (snowplow)
+ * - Third party: MoEngage, Incognia, Firebase
  * 
  * TOKEN FORMAT: BigBasket uses self-contained JWTs (HS256 signed)
  * The JWT payload contains ALL auth info:
@@ -8,43 +15,49 @@
  *   - vid: Visitor ID (19-digit numeric)
  *   - TDLTOKEN: UUID session token
  *   - refresh_token: UUID for token refresh
- *   - device_id: "WEB" | "ANDROID" | "IOS"
- *   - source_id: 1 (web)
+ *   - device_id: "ANDROID"
+ *   - source_id: 2 (android)
  *   - exp: Unix timestamp expiry
- * 
- * HEADERS: When authenticated, BigBasket expects:
- *   - Authorization: Bearer <jwt>
- *   - X-BB-Token: <jwt> (same token, redundant but required)
- *   - X-Visitor-Id: <vid from jwt>
- *   - X-Member-Id: <mid from jwt> (optional)
- *   - X-TDLTOKEN: <TDLTOKEN from jwt> (optional)
- *   - Cookie: _bb_token=<jwt>; _bb_vid=<vid>; _bb_mid=<mid>
- * 
- * IMPORTANT: BigBasket frequently rotates API paths and adds new anti-bot headers.
- * If OTP fails, you MUST capture fresh traffic. See /capture command in bot.
  */
 
 module.exports = {
   // Base configuration
   BB_BASE_URL: process.env.BB_BASE_URL || 'https://www.bigbasket.com',
-  BB_API_VERSION: process.env.BB_API_VERSION || 'v3.1.0',
-  BB_CHANNEL: process.env.BB_CHANNEL || 'web',
-  
-  // Default headers mimic the BigBasket web client (based on captured traffic)
-  // Web client is easier to replicate than Android app (no SSL pinning)
+  BB_API_VERSION: process.env.BB_API_VERSION || 'v4.2.0',
+  BB_CHANNEL: process.env.BB_CHANNEL || 'bb-android',
+  BB_APP_VERSION: '8.29.1',
+  BB_BUILD_VERSION: '25110910',
+
+  // Android App headers (captured from real traffic - BigBasket v8.29.1)
   DEFAULT_HEADERS: {
-    'User-Agent': process.env.BB_USER_AGENT || 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    'User-Agent': process.env.BB_USER_AGENT || 'Dalvik/2.1.0 (Linux; U; Android 13; SM-S911B Build/TP1A.220624.014)',
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Accept-Language': 'en-IN,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'X-Channel': process.env.BB_CHANNEL || 'bb-android',
+    'X-Caller': 'app',
+    'X-Entry-Context': 'hp',
+    'X-Entry-Context-Id': '1',
+    'X-Tracker': '',
+    'X-App-Version': '8.29.1',
+    'X-Build-Version': '25110910',
+    'Connection': 'keep-alive',
+  },
+
+  // Web headers (fallback - for browser-based access)
+  WEB_HEADERS: {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-IN,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
     'Origin': 'https://www.bigbasket.com',
     'Referer': 'https://www.bigbasket.com/',
-    'X-Channel': process.env.BB_CHANNEL || 'web',
+    'X-Channel': 'web',
     'X-Caller': 'page',
     'X-Entry-Context': 'hp',
     'X-Entry-Context-Id': '1',
-    'X-Tracker': '',
     'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
     'sec-ch-ua-mobile': '?1',
     'sec-ch-ua-platform': '"Android"',
@@ -53,97 +66,133 @@ module.exports = {
     'sec-fetch-site': 'same-origin',
   },
 
-  // Android app headers (fallback if web headers get blocked)
-  ANDROID_HEADERS: {
-    'User-Agent': 'BigBasket/7.10.2 (Android; SDK 33; arm64-v8a)',
-    'X-Channel': 'bb-android',
-    'X-Caller': 'app',
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'X-App-Version': '7.10.2',
-    'X-Build-Version': '25800',
-    'X-Entry-Context': 'hp',
-    'X-Entry-Context-Id': '1',
-    'X-Tracker': '',
-    'Accept-Language': 'en-IN',
-    'Accept-Encoding': 'gzip, deflate, br',
-  },
-
-  // API Endpoint paths
-  // Override via env vars if you capture fresh endpoints from mitmproxy
+  // API Endpoint paths (captured from BigBasket v8.29.1 traffic)
   ENDPOINTS: {
-    // Authentication
+    // ========== AUTHENTICATION ==========
     AUTH: {
-      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/mapi/v3.1.0/login/send-otp/',
-      VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/mapi/v3.1.0/login/verify-otp/',
-      REFRESH_TOKEN: '/mapi/v3.1.0/login/refresh-token/',
-      LOGOUT: '/mapi/v3.1.0/login/logout/',
+      // Login - Send OTP (captured: POST /mapi/v4.2.0/login/otp-send/)
+      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/mapi/v4.2.0/login/otp-send/',
+      // Verify OTP (captured: POST /mapi/v4.2.0/login/otp-verify/)
+      VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/mapi/v4.2.0/login/otp-verify/',
+      // Refresh token
+      REFRESH_TOKEN: '/mapi/v4.2.0/login/refresh-token/',
+      // Logout
+      LOGOUT: '/mapi/v4.2.0/login/logout/',
     },
 
-    // Home & Navigation
+    // ========== UI SERVICE (captured from real traffic) ==========
+    UI_SERVICE: {
+      // GET /ui-svc/v2/header/ - Door info, address, delivery config
+      HEADER: '/ui-svc/v2/header/',
+      // GET /ui-svc/v1/app-data - Full app config, categories, layout
+      APP_DATA: '/ui-svc/v1/app-data',
+    },
+
+    // ========== HOME & NAVIGATION ==========
     HOME: {
-      PAGE: '/mapi/v3.1.0/home/page/',
-      BANNERS: '/mapi/v3.1.0/home/banners/',
-      TOP_PICKS: '/mapi/v3.1.0/home/top-picks/',
+      // Home page data
+      PAGE: '/mapi/v4.2.0/home/page/',
+      // Banners/offers carousel
+      BANNERS: '/mapi/v4.2.0/home/banners/',
+      // Top picks / recommended
+      TOP_PICKS: '/mapi/v4.2.0/home/top-picks/',
+      // Personalised sections
+      SECTIONS: '/mapi/v4.2.0/home/sections/',
     },
 
-    // Categories
+    // ========== CATEGORIES ==========
     CATEGORY: {
-      LIST: '/mapi/v3.1.0/category/list/',
-      SUB_CATEGORY: '/mapi/v3.1.0/category/sub-category/',
-      PRODUCTS: '/mapi/v3.1.0/category/products/',
+      // All categories list
+      LIST: '/mapi/v4.2.0/category/list/',
+      // Sub-categories under a parent
+      SUB_CATEGORY: '/mapi/v4.2.0/category/sub-category/',
+      // Products in a category
+      PRODUCTS: '/mapi/v4.2.0/category/products/',
     },
 
-    // Products
+    // ========== PRODUCTS ==========
     PRODUCT: {
-      LIST: '/mapi/v3.1.0/product/list/',
-      DETAIL: '/mapi/v3.1.0/product/detail/',
-      SEARCH: '/mapi/v3.1.0/product/search/',
-      SUGGESTIONS: '/mapi/v3.1.0/product/search-suggestions/',
+      // Product listing
+      LIST: '/mapi/v4.2.0/product/list/',
+      // Product detail
+      DETAIL: '/mapi/v4.2.0/product/detail/',
+      // Search products
+      SEARCH: '/mapi/v4.2.0/product/search/',
+      // Search suggestions/autocomplete
+      SUGGESTIONS: '/mapi/v4.2.0/product/search-suggestions/',
     },
 
-    // Cart
+    // ========== CART ==========
     CART: {
-      GET: '/mapi/v3.1.0/cart/get/',
-      ADD: '/mapi/v3.1.0/cart/add/',
-      REMOVE: '/mapi/v3.1.0/cart/remove/',
-      UPDATE_QTY: '/mapi/v3.1.0/cart/update-qty/',
-      CLEAR: '/mapi/v3.1.0/cart/clear/',
+      // Get cart contents
+      GET: '/mapi/v4.2.0/cart/get/',
+      // Add item to cart
+      ADD: '/mapi/v4.2.0/cart/add/',
+      // Remove item from cart
+      REMOVE: '/mapi/v4.2.0/cart/remove/',
+      // Update item quantity
+      UPDATE_QTY: '/mapi/v4.2.0/cart/update-qty/',
+      // Clear entire cart
+      CLEAR: '/mapi/v4.2.0/cart/clear/',
     },
 
-    // Orders
+    // ========== ORDERS ==========
     ORDER: {
-      LIST: '/mapi/v3.1.0/order/list/',
-      DETAIL: '/mapi/v3.1.0/order/detail/',
-      PLACE: '/mapi/v3.1.0/order/place/',
-      CANCEL: '/mapi/v3.1.0/order/cancel/',
-      TRACK: '/mapi/v3.1.0/order/track/',
+      // Order history
+      LIST: '/mapi/v4.2.0/order/list/',
+      // Order detail
+      DETAIL: '/mapi/v4.2.0/order/detail/',
+      // Place order
+      PLACE: '/mapi/v4.2.0/order/place/',
+      // Cancel order
+      CANCEL: '/mapi/v4.2.0/order/cancel/',
+      // Track order
+      TRACK: '/mapi/v4.2.0/order/track/',
     },
 
-    // Address
+    // ========== ADDRESS ==========
     ADDRESS: {
-      LIST: '/mapi/v3.1.0/address/list/',
-      ADD: '/mapi/v3.1.0/address/add/',
-      DELETE: '/mapi/v3.1.0/address/delete/',
-      SET_DEFAULT: '/mapi/v3.1.0/address/set-default/',
+      LIST: '/mapi/v4.2.0/address/list/',
+      ADD: '/mapi/v4.2.0/address/add/',
+      DELETE: '/mapi/v4.2.0/address/delete/',
+      SET_DEFAULT: '/mapi/v4.2.0/address/set-default/',
     },
 
-    // Slot / Delivery
+    // ========== DELIVERY SLOTS ==========
     SLOT: {
-      AVAILABLE: '/mapi/v3.1.0/slot/available/',
-      SELECT: '/mapi/v3.1.0/slot/select/',
+      AVAILABLE: '/mapi/v4.2.0/slot/available/',
+      SELECT: '/mapi/v4.2.0/slot/select/',
     },
 
-    // Offers & Wallet
+    // ========== OFFERS & WALLET ==========
     OFFERS: {
-      LIST: '/mapi/v3.1.0/offers/list/',
-      APPLY_COUPON: '/mapi/v3.1.0/offers/apply-coupon/',
-      REMOVE_COUPON: '/mapi/v3.1.0/offers/remove-coupon/',
+      LIST: '/mapi/v4.2.0/offers/list/',
+      APPLY_COUPON: '/mapi/v4.2.0/offers/apply-coupon/',
+      REMOVE_COUPON: '/mapi/v4.2.0/offers/remove-coupon/',
     },
 
     WALLET: {
-      BALANCE: '/mapi/v3.1.0/wallet/balance/',
+      BALANCE: '/mapi/v4.2.0/wallet/balance/',
     },
+
+    // ========== DEVICE & TRACKING (captured) ==========
+    DEVICE: {
+      // POST /mapi/v4.2.0/update/device/info/ - Register device
+      UPDATE_INFO: '/mapi/v4.2.0/update/device/info/',
+    },
+
+    // ========== HEALTH CHECK (captured) ==========
+    HEALTH: {
+      CHECK: '/service/healthcheck.html',
+    },
+  },
+
+  // Third-party services detected in traffic
+  THIRD_PARTY: {
+    SNOWPLOW_COLLECTOR: 'https://prod-collector.bigbasket.com/com.snowplowanalytics.snowplow/tp2',
+    MOENGAGE: 'https://sdk-01.moengage.com',
+    INCOGNIA: 'https://service1.us.incognia.com',
+    FIREBASE_CONFIG: 'https://firebaseremoteconfig.googleapis.com',
   },
 
   // User states for the bot conversation flow
