@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BigBasket - Grocery Shopping</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+      <div class="loader">
+        <div class="spinner"></div>
+        <p>Loading BigBasket...</p>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header class="header" id="header">
+      <div class="header-top">
+        <div class="header-logo">
+          <span class="logo-icon">🛒</span>
+          <span class="logo-text">BigBasket</span>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" id="search-toggle-btn">🔍</button>
+          <button class="icon-btn cart-btn" id="cart-header-btn">
+            🛍️
+            <span class="cart-badge" id="cart-badge">0</span>
+          </button>
+        </div>
+      </div>
+      <!-- Search Bar -->
+      <div class="search-bar" id="search-bar" style="display:none;">
+        <input type="text" id="search-input" placeholder="Search for products..." />
+        <button class="search-btn" id="search-btn">🔍</button>
+        <button class="search-close" id="search-close-btn">✕</button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content" id="main-content">
+      
+      <!-- HOME SECTION -->
+      <section class="page active" id="page-home">
+        <div class="banner-carousel" id="banner-carousel">
+          <div class="banner-slide active">
+            <div class="banner-placeholder">
+              <span>🛒</span>
+              <p>Fresh Groceries Delivered!</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <h3>Categories</h3>
+          <a href="#" class="view-all" data-page="categories">View All →</a>
+        </div>
+        <div class="categories-grid" id="home-categories">
+          <!-- Populated dynamically -->
+        </div>
+
+        <div class="section-title">
+          <h3>Top Picks</h3>
+        </div>
+        <div class="products-grid" id="home-products">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- CATEGORIES SECTION -->
+      <section class="page" id="page-categories">
+        <div class="page-header">
+          <h2>All Categories</h2>
+        </div>
+        <div class="categories-list" id="categories-list">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- PRODUCTS SECTION -->
+      <section class="page" id="page-products">
+        <div class="page-header">
+          <button class="back-btn" data-page="categories">← Back</button>
+          <h2 id="products-title">Products</h2>
+        </div>
+        <div class="products-grid" id="products-list">
+          <!-- Populated dynamically -->
+        </div>
+        <div class="load-more" id="load-more-products" style="display:none;">
+          <button class="btn btn-secondary" id="load-more-btn">Load More</button>
+        </div>
+      </section>
+
+      <!-- SEARCH RESULTS -->
+      <section class="page" id="page-search">
+        <div class="page-header">
+          <button class="back-btn" data-page="home">← Back</button>
+          <h2 id="search-title">Search Results</h2>
+        </div>
+        <div class="products-grid" id="search-results">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- CART SECTION -->
+      <section class="page" id="page-cart">
+        <div class="page-header">
+          <h2>Your Cart</h2>
+        </div>
+        <div class="cart-items" id="cart-items">
+          <!-- Populated dynamically -->
+        </div>
+        <div class="cart-empty" id="cart-empty" style="display:none;">
+          <span class="empty-icon">🛒</span>
+          <p>Your cart is empty</p>
+          <button class="btn btn-primary" data-page="home">Start Shopping</button>
+        </div>
+        <div class="cart-summary" id="cart-summary" style="display:none;">
+          <div class="summary-row">
+            <span>Subtotal</span>
+            <span id="cart-subtotal">₹0</span>
+          </div>
+          <div class="summary-row">
+            <span>Delivery</span>
+            <span id="cart-delivery">₹0</span>
+          </div>
+          <div class="summary-row total">
+            <span>Total</span>
+            <span id="cart-total">₹0</span>
+          </div>
+          <button class="btn btn-primary btn-full" id="checkout-btn">
+            Proceed to Checkout
+          </button>
+        </div>
+      </section>
+
+      <!-- ORDERS SECTION -->
+      <section class="page" id="page-orders">
+        <div class="page-header">
+          <h2>My Orders</h2>
+        </div>
+        <div class="orders-list" id="orders-list">
+          <!-- Populated dynamically -->
+        </div>
+        <div class="orders-empty" id="orders-empty" style="display:none;">
+          <span class="empty-icon">📦</span>
+          <p>No orders yet</p>
+        </div>
+      </section>
+
+      <!-- PROFILE SECTION -->
+      <section class="page" id="page-profile">
+        <div class="page-header">
+          <h2>My Account</h2>
+        </div>
+        <div class="profile-card">
+          <div class="profile-info">
+            <span class="profile-avatar">👤</span>
+            <div>
+              <p class="profile-name" id="profile-name">User</p>
+              <p class="profile-phone" id="profile-phone">+91 XXXXXXXXXX</p>
+            </div>
+          </div>
+        </div>
+        <div class="profile-menu">
+          <a href="#" class="menu-item" data-page="orders">
+            <span>📦</span> My Orders
+          </a>
+          <a href="#" class="menu-item" id="addresses-btn">
+            <span>📍</span> Saved Addresses
+          </a>
+          <a href="#" class="menu-item" id="offers-btn">
+            <span>🎫</span> Offers & Coupons
+          </a>
+          <a href="#" class="menu-item" id="logout-btn">
+            <span>🚪</span> Logout
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav" id="bottom-nav">
+      <button class="nav-item active" data-page="home">
+        <span class="nav-icon">🏠</span>
+        <span class="nav-label">Home</span>
+      </button>
+      <button class="nav-item" data-page="categories">
+        <span class="nav-icon">📋</span>
+        <span class="nav-label">Categories</span>
+      </button>
+      <button class="nav-item" data-page="cart">
+        <span class="nav-icon">🛒</span>
+        <span class="nav-label">Cart</span>
+      </button>
+      <button class="nav-item" data-page="orders">
+        <span class="nav-icon">📦</span>
+        <span class="nav-label">Orders</span>
+      </button>
+      <button class="nav-item" data-page="profile">
+        <span class="nav-icon">👤</span>
+        <span class="nav-label">Profile</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
