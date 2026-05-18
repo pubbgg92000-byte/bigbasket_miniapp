@@ -87,6 +87,10 @@ function initBot() {
         await handleOTP(chatId, telegramId, text);
         break;
 
+      case 'awaiting_creds':
+        await handleManualCreds(chatId, telegramId, text);
+        break;
+
       case USER_STATES.AUTHENTICATED:
         await bot.sendMessage(chatId, 
           `You're already logged in! 🎉\nUse the button below to open BigBasket:`,
@@ -116,6 +120,87 @@ function initBot() {
           one_time_keyboard: true,
         },
       }
+    );
+  });
+
+  // /settoken command - manually inject BigBasket token (from mitmproxy capture)
+  bot.onText(/\/settoken (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const telegramId = msg.from.id;
+    const token = match[1].trim();
+
+    if (!token || token.length < 10) {
+      return bot.sendMessage(chatId, 
+        '❌ Invalid token. Usage:\n`/settoken YOUR_BB_ACCESS_TOKEN`\n\n' +
+        'Get your token by intercepting BigBasket app traffic with mitmproxy.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    userOps.createUser(telegramId);
+    userOps.updateUserTokens(telegramId, {
+      accessToken: token,
+      refreshToken: null,
+      memberId: null,
+      visitorId: null,
+    });
+
+    const sessionId = uuidv4();
+    sessionOps.createSession(sessionId, telegramId);
+
+    await bot.sendMessage(chatId,
+      `✅ Token set successfully! You're now authenticated.\n\n` +
+      `Tap below to start shopping:`,
+    );
+    await sendMiniAppButton(chatId, msg.from.first_name || 'User');
+  });
+
+  // /setcreds command - set full credentials (token + visitor_id + member_id)
+  bot.onText(/\/setcreds/, async (msg) => {
+    const chatId = msg.chat.id;
+    const telegramId = msg.from.id;
+
+    userOps.createUser(telegramId);
+    userOps.updateUserState(telegramId, 'awaiting_creds');
+
+    await bot.sendMessage(chatId,
+      `🔧 *Manual Credential Setup*\n\n` +
+      `Send your BigBasket credentials in this format:\n\n` +
+      '```\ntoken: YOUR_ACCESS_TOKEN\nvisitor_id: YOUR_VISITOR_ID\nmember_id: YOUR_MEMBER_ID\n```\n\n' +
+      `*How to get these:*\n` +
+      `1. Install mitmproxy on your PC\n` +
+      `2. Connect your phone through the proxy\n` +
+      `3. Open BigBasket app & log in\n` +
+      `4. Copy the X-BB-Token, X-Visitor-Id from request headers\n` +
+      `5. Or look for access_token in the login response`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
+  // /capture command - show how to capture API traffic
+  bot.onText(/\/capture/, async (msg) => {
+    const chatId = msg.chat.id;
+    await bot.sendMessage(chatId,
+      `🔬 *How to Capture BigBasket API Traffic*\n\n` +
+      `*Method 1 - mitmproxy (Recommended):*\n` +
+      `1. Install mitmproxy: \`pip install mitmproxy\`\n` +
+      `2. Run: \`mitmweb --listen-port 8080\`\n` +
+      `3. Set phone proxy to your PC IP:8080\n` +
+      `4. Install mitmproxy CA cert on phone\n` +
+      `5. Open BigBasket app → Login\n` +
+      `6. Check mitmweb for requests to bigbasket.com\n\n` +
+      `*Method 2 - Frida (for SSL pinning bypass):*\n` +
+      `1. Root your device / use emulator\n` +
+      `2. Install Frida server on device\n` +
+      `3. Run: \`frida -U -f com.bigbasket.mobileapp -l ssl_bypass.js\`\n` +
+      `4. Capture traffic through mitmproxy\n\n` +
+      `*What to look for:*\n` +
+      `• POST request when you enter phone number (OTP endpoint)\n` +
+      `• POST request when you enter OTP (verify endpoint)\n` +
+      `• Headers: X-BB-Token, X-Visitor-Id, User-Agent\n` +
+      `• Response: access_token, member_id\n\n` +
+      `Once captured, use /settoken or /setcreds to authenticate.`,
+      { parse_mode: 'Markdown' }
     );
   });
 
@@ -197,6 +282,7 @@ async function handlePhoneNumber(chatId, telegramId, phoneNumber) {
       }
     );
   } else {
+    console.error('[BOT] OTP send failed:', JSON.stringify(result));
     await bot.sendMessage(chatId,
       `❌ Failed to send OTP: ${result.error}\n\n` +
       `Please try again or enter a different number.`
@@ -251,6 +337,61 @@ async function handleOTP(chatId, telegramId, otp) {
       `❌ ${result.error}\n\nPlease try again or type /login to restart.`
     );
   }
+}
+
+/**
+ * Handle manual credentials input (from mitmproxy capture)
+ */
+async function handleManualCreds(chatId, telegramId, text) {
+  // Parse credentials from text (supports multiple formats)
+  const lines = text.split('\n');
+  let accessToken = null;
+  let visitorId = null;
+  let memberId = null;
+
+  for (const line of lines) {
+    const lower = line.toLowerCase().trim();
+    if (lower.startsWith('token:') || lower.startsWith('access_token:') || lower.startsWith('x-bb-token:')) {
+      accessToken = line.split(':').slice(1).join(':').trim();
+    } else if (lower.startsWith('visitor_id:') || lower.startsWith('x-visitor-id:') || lower.startsWith('visitor:')) {
+      visitorId = line.split(':').slice(1).join(':').trim();
+    } else if (lower.startsWith('member_id:') || lower.startsWith('member:') || lower.startsWith('user_id:')) {
+      memberId = line.split(':').slice(1).join(':').trim();
+    }
+  }
+
+  // If just a single line, treat as token
+  if (!accessToken && lines.length === 1 && text.trim().length > 10) {
+    accessToken = text.trim();
+  }
+
+  if (!accessToken) {
+    return bot.sendMessage(chatId,
+      '❌ Could not parse credentials. Please send in this format:\n\n' +
+      '```\ntoken: YOUR_ACCESS_TOKEN\nvisitor_id: YOUR_VISITOR_ID\nmember_id: YOUR_MEMBER_ID\n```\n\n' +
+      'Or just send the token alone.',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  userOps.updateUserTokens(telegramId, {
+    accessToken,
+    refreshToken: null,
+    memberId: memberId || null,
+    visitorId: visitorId || null,
+  });
+
+  const sessionId = uuidv4();
+  sessionOps.createSession(sessionId, telegramId);
+
+  await bot.sendMessage(chatId,
+    `✅ Credentials set successfully!\n\n` +
+    `• Token: ${accessToken.substring(0, 20)}....\n` +
+    `• Visitor ID: ${visitorId || 'auto-generated'}\n` +
+    `• Member ID: ${memberId || 'unknown'}\n\n` +
+    `You're now authenticated. Tap below to shop:`,
+  );
+  await sendMiniAppButton(chatId, 'there');
 }
 
 /**

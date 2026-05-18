@@ -1,9 +1,14 @@
 /**
  * BigBasket API Configuration
- * Reverse-engineered from BigBasket Android App v7.10.x
+ * Reverse-engineered from BigBasket Android App & Web traffic
  * 
- * These endpoints mirror the mobile app's HTTP traffic patterns.
- * Headers simulate the Android client for API compatibility.
+ * IMPORTANT: BigBasket frequently rotates API paths and adds new anti-bot headers.
+ * If OTP fails, you MUST capture fresh traffic. See /capture command in bot.
+ * 
+ * Known API patterns (may change):
+ * - Mobile API: /mapi/v3.1.0/... (Android app)
+ * - Web API: /auth/... (website Next.js frontend)  
+ * - Internal: /api/v2/... (microservices)
  */
 
 module.exports = {
@@ -12,10 +17,10 @@ module.exports = {
   BB_API_VERSION: process.env.BB_API_VERSION || 'v3.1.0',
   BB_CHANNEL: process.env.BB_CHANNEL || 'bb-android',
   
-  // Headers that mimic the Android app
+  // Headers that mimic the Android app (from APK v7.10.x decompilation)
   DEFAULT_HEADERS: {
     'User-Agent': process.env.BB_USER_AGENT || 'BigBasket/7.10.2 (Android; SDK 33; arm64-v8a)',
-    'X-Channel': 'bb-android',
+    'X-Channel': process.env.BB_CHANNEL || 'bb-android',
     'X-Caller': 'app',
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -24,14 +29,32 @@ module.exports = {
     'X-Entry-Context': 'hp',
     'X-Entry-Context-Id': '1',
     'X-Tracker': '',
+    'Accept-Language': 'en-IN',
+    'Accept-Encoding': 'gzip, deflate, br',
   },
 
-  // API Endpoint paths
+  // Web headers (for browser-style requests)
+  WEB_HEADERS: {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/plain, */*',
+    'Origin': 'https://www.bigbasket.com',
+    'Referer': 'https://www.bigbasket.com/',
+    'Accept-Language': 'en-IN,en;q=0.9',
+    'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
+    'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': '"Android"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+  },
+
+  // API Endpoint paths (multiple variants - BigBasket uses different paths across versions)
   ENDPOINTS: {
-    // Authentication
+    // Authentication (known patterns, may need updating via mitmproxy)
     AUTH: {
-      SEND_OTP: '/mapi/v3.1.0/login/send-otp/',
-      VERIFY_OTP: '/mapi/v3.1.0/login/verify-otp/',
+      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/mapi/v3.1.0/login/send-otp/',
+      VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/mapi/v3.1.0/login/verify-otp/',
       REFRESH_TOKEN: '/mapi/v3.1.0/login/refresh-token/',
       LOGOUT: '/mapi/v3.1.0/login/logout/',
     },
