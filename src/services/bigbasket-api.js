@@ -128,29 +128,45 @@ class BigBasketAPI {
 
   /**
    * Send OTP to phone number
-   * Captured: POST /mapi/v4.2.0/login/otp-send/
-   * Body: { "login_id": "9999999999", "login_type": 2, "type": "otp" }
+   * Confirmed: POST /member-tdl/v3/member/unified-login/
+   * This is a unified endpoint that handles both OTP send and verify
+   * Error code HU4011 = invalid OTP (HTTP 400)
+   * Analytics shows: Action="mobile OTP", EventSubGroup="login", flow="easyonboarding"
    */
   async sendOTP(phoneNumber) {
     const attempts = [
+      // Confirmed unified-login endpoint (from analytics error decode)
       {
-        url: ENDPOINTS.AUTH.SEND_OTP,
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
         payload: {
           login_id: phoneNumber,
           login_type: 2,
           type: 'otp',
+          action: 'send_otp',
         },
       },
+      // Same endpoint, different body format
+      {
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
+        payload: {
+          loginId: phoneNumber,
+          loginType: 'otp',
+          otpType: 'sms',
+          action: 'send',
+        },
+      },
+      // Same endpoint, minimal format
+      {
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
+        payload: {
+          login_id: phoneNumber,
+          login_type: 2,
+          otp_type: 'sms',
+        },
+      },
+      // Fallback: try older mapi endpoint
       {
         url: '/mapi/v4.2.0/login/send-otp/',
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          type: 'otp',
-        },
-      },
-      {
-        url: '/mapi/v3.1.0/login/send-otp/',
         payload: {
           login_id: phoneNumber,
           login_type: 2,
@@ -197,15 +213,45 @@ class BigBasketAPI {
   }
 
   /**
-   * Verify OTP and get access tokens
-   * Captured: POST /mapi/v4.2.0/login/otp-verify/
-   * Body: { "login_id": "9999999999", "login_type": 2, "otp": "123456" }
-   * Response: { "access_token": "jwt...", "member_id": "...", ... }
+   * Verify OTP via unified-login endpoint
+   * Confirmed: POST /member-tdl/v3/member/unified-login/
+   * Error "Please Enter Valid OTP." with code HU4011 on wrong OTP
    */
   async verifyOTP(phoneNumber, otp) {
     const attempts = [
+      // Confirmed unified-login endpoint
       {
-        url: ENDPOINTS.AUTH.VERIFY_OTP,
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
+        payload: {
+          login_id: phoneNumber,
+          login_type: 2,
+          otp: otp,
+          type: 'otp',
+          action: 'verify_otp',
+        },
+      },
+      // Same endpoint, different format
+      {
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
+        payload: {
+          loginId: phoneNumber,
+          loginType: 'otp',
+          otp: otp,
+          action: 'verify',
+        },
+      },
+      // Same endpoint, minimal
+      {
+        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
+        payload: {
+          login_id: phoneNumber,
+          login_type: 2,
+          otp: otp,
+        },
+      },
+      // Fallback older endpoint
+      {
+        url: '/mapi/v4.2.0/login/verify-otp/',
         payload: {
           login_id: phoneNumber,
           login_type: 2,
