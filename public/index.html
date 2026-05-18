@@ -28,13 +28,13 @@
           <button class="icon-btn" id="search-toggle-btn">🔍</button>
           <button class="icon-btn cart-btn" id="cart-header-btn">
             🛍️
-            <span class="cart-badge" id="cart-badge">0</span>
+            <span class="cart-badge" id="cart-badge" style="display:none;">0</span>
           </button>
         </div>
       </div>
       <!-- Search Bar -->
       <div class="search-bar" id="search-bar" style="display:none;">
-        <input type="text" id="search-input" placeholder="Search for products..." />
+        <input type="text" id="search-input" placeholder="Search for groceries..." />
         <button class="search-btn" id="search-btn">🔍</button>
         <button class="search-close" id="search-close-btn">✕</button>
       </div>
@@ -55,7 +55,7 @@
         </div>
 
         <div class="section-title">
-          <h3>Categories</h3>
+          <h3>Shop by Category</h3>
           <a href="#" class="view-all" data-page="categories">View All →</a>
         </div>
         <div class="categories-grid" id="home-categories">
@@ -63,7 +63,7 @@
         </div>
 
         <div class="section-title">
-          <h3>Top Picks</h3>
+          <h3>Popular Products</h3>
         </div>
         <div class="products-grid" id="home-products">
           <!-- Populated dynamically -->
@@ -89,16 +89,13 @@
         <div class="products-grid" id="products-list">
           <!-- Populated dynamically -->
         </div>
-        <div class="load-more" id="load-more-products" style="display:none;">
-          <button class="btn btn-secondary" id="load-more-btn">Load More</button>
-        </div>
       </section>
 
       <!-- SEARCH RESULTS -->
       <section class="page" id="page-search">
         <div class="page-header">
           <button class="back-btn" data-page="home">← Back</button>
-          <h2 id="search-title">Search Results</h2>
+          <h2>Search: <span id="search-title"></span></h2>
         </div>
         <div class="products-grid" id="search-results">
           <!-- Populated dynamically -->
@@ -119,6 +116,7 @@
           <button class="btn btn-primary" data-page="home">Start Shopping</button>
         </div>
         <div class="cart-summary" id="cart-summary" style="display:none;">
+          <div class="cart-savings" id="cart-savings" style="display:none;"></div>
           <div class="summary-row">
             <span>Subtotal</span>
             <span id="cart-subtotal">₹0</span>
@@ -148,6 +146,7 @@
         <div class="orders-empty" id="orders-empty" style="display:none;">
           <span class="empty-icon">📦</span>
           <p>No orders yet</p>
+          <button class="btn btn-secondary" data-page="home">Start Shopping</button>
         </div>
       </section>
 
@@ -161,22 +160,26 @@
             <span class="profile-avatar">👤</span>
             <div>
               <p class="profile-name" id="profile-name">User</p>
-              <p class="profile-phone" id="profile-phone">+91 XXXXXXXXXX</p>
+              <p class="profile-phone" id="profile-phone">BigBasket Member</p>
+              <p class="auth-status" id="auth-status"></p>
             </div>
           </div>
         </div>
         <div class="profile-menu">
           <a href="#" class="menu-item" data-page="orders">
-            <span>📦</span> My Orders
+            <span>📦</span> <span>My Orders</span> <span class="menu-arrow">›</span>
           </a>
           <a href="#" class="menu-item" id="addresses-btn">
-            <span>📍</span> Saved Addresses
+            <span>📍</span> <span>Saved Addresses</span> <span class="menu-arrow">›</span>
           </a>
           <a href="#" class="menu-item" id="offers-btn">
-            <span>🎫</span> Offers & Coupons
+            <span>🎫</span> <span>Offers & Coupons</span> <span class="menu-arrow">›</span>
+          </a>
+          <a href="#" class="menu-item" id="wallet-btn">
+            <span>💰</span> <span>BB Wallet</span> <span class="menu-arrow">›</span>
           </a>
           <a href="#" class="menu-item" id="logout-btn">
-            <span>🚪</span> Logout
+            <span>🚪</span> <span>Logout</span> <span class="menu-arrow">›</span>
           </a>
         </div>
       </section>
@@ -202,7 +205,7 @@
       </button>
       <button class="nav-item" data-page="profile">
         <span class="nav-icon">👤</span>
-        <span class="nav-label">Profile</span>
+        <span class="nav-label">Account</span>
       </button>
     </nav>
   </div>

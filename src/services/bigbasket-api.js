@@ -1,42 +1,23 @@
 const axios = require('axios');
-const { BB_BASE_URL, DEFAULT_HEADERS, ENDPOINTS } = require('../config/constants');
+const { BB_BASE_URL, DEFAULT_HEADERS, WEB_HEADERS, ENDPOINTS, BB_APP_VERSION, BB_BUILD_VERSION } = require('../config/constants');
 
 /**
  * BigBasket API Service
  * 
  * Proxies requests to BigBasket's mobile API endpoints.
- * Mimics the Android app's HTTP traffic patterns including:
- * - Custom headers (User-Agent, X-Channel, X-Caller)
- * - Authentication token handling
- * - Request/Response transformation
+ * Based on captured traffic from BigBasket Android App v8.29.1
  * 
- * NOTE: BigBasket frequently changes their API paths and adds new security headers.
- * If requests fail, you need to:
- * 1. Intercept fresh traffic from the BigBasket Android APK using mitmproxy/Frida
- * 2. Update endpoints in config/constants.js
- * 3. Update headers (especially X-Tracker, cookies, fingerprint)
+ * Captured patterns:
+ * - App uses /mapi/v4.2.0/ prefix for mobile APIs
+ * - App uses /ui-svc/v1/ and /ui-svc/v2/ for UI configuration
+ * - Auth token is JWT containing mid, vid, TDLTOKEN, refresh_token
+ * - Device info sent via /mapi/v4.2.0/update/device/info/
+ * - Analytics via Snowplow to prod-collector.bigbasket.com
  */
 class BigBasketAPI {
   /**
-   * @param {string|null} accessToken - Full JWT token (contains mid, vid, TDLTOKEN, refresh_token inside)
-   * @param {string|null} visitorId - Visitor ID (extracted from JWT vid field or auto-generated)
-   * 
-   * BigBasket JWT Payload Structure:
-   * {
-   *   "chaff": "random_string",
-   *   "time": 1739099619.3279107,
-   *   "mid": 13758350,           // Member ID
-   *   "vid": 1254087522695103232, // Visitor ID (numeric)
-   *   "device_id": "WEB",
-   *   "source_id": 1,
-   *   "ec_list": [3,4,10,...],    // Enabled channel list
-   *   "TDLTOKEN": "uuid",        // TDL session token
-   *   "refresh_token": "uuid",   // For token refresh
-   *   "tdl_expiry": 1779704418,
-   *   "exp": 1794879619,         // Token expiry timestamp
-   *   "device_model": "WEB",
-   *   "is_internal_user": false
-   * }
+   * @param {string|null} accessToken - Full JWT token
+   * @param {string|null} visitorId - Visitor ID (from JWT vid field)
    */
   constructor(accessToken = null, visitorId = null) {
     this.accessToken = accessToken;
@@ -49,19 +30,19 @@ class BigBasketAPI {
     // Extract member ID from JWT
     this.memberId = this.jwtPayload?.mid ? String(this.jwtPayload.mid) : null;
     
-    // Extract TDLTOKEN from JWT (used as additional auth header)
+    // Extract TDLTOKEN from JWT (additional auth header)
     this.tdlToken = this.jwtPayload?.TDLTOKEN || null;
 
-    // Build headers matching BigBasket web client behavior
-    const headers = {
-      ...DEFAULT_HEADERS,
-      'X-Visitor-Id': this.visitorId,
-    };
+    // Build headers matching captured BigBasket Android traffic
+    const headers = { ...DEFAULT_HEADERS };
 
-    // When authenticated, BigBasket web uses these headers
+    // Add auth headers when authenticated
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;
       headers['X-BB-Token'] = accessToken;
+    }
+    if (this.visitorId) {
+      headers['X-Visitor-Id'] = this.visitorId;
     }
     if (this.tdlToken) {
       headers['X-TDLTOKEN'] = this.tdlToken;
@@ -70,34 +51,27 @@ class BigBasketAPI {
       headers['X-Member-Id'] = this.memberId;
     }
 
-    // Cookie-style auth (BigBasket web uses cookies alongside headers)
-    if (accessToken) {
-      headers['Cookie'] = `_bb_token=${accessToken}; _bb_vid=${this.visitorId}; _bb_mid=${this.memberId || ''}`;
-    }
-
     this.client = axios.create({
       baseURL: BB_BASE_URL,
       timeout: 30000,
       headers,
     });
 
-    // Request interceptor - log all outgoing requests
+    // Request interceptor for logging
     this.client.interceptors.request.use((config) => {
-      console.log(`[BB-API] >> ${config.method?.toUpperCase()} ${config.url}`);
-      if (config.data) console.log(`[BB-API] >> Body:`, JSON.stringify(config.data));
+      console.log(`[BB-API] >> ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
       return config;
     });
 
-    // Response interceptor - log all responses for debugging
+    // Response interceptor for logging
     this.client.interceptors.response.use(
       (response) => {
-        console.log(`[BB-API] << ${response.status} ${response.config?.url}`);
-        console.log(`[BB-API] << Response:`, JSON.stringify(response.data).substring(0, 500));
+        console.log(`[BB-API] << ${response.status} ${response.config?.url} (${JSON.stringify(response.data).length} bytes)`);
         return response;
       },
       (error) => {
-        console.error(`[BB-API] !! ERROR ${error.response?.status} - ${error.config?.url}`);
-        console.error(`[BB-API] !! Response:`, JSON.stringify(error.response?.data || error.message));
+        console.error(`[BB-API] !! ERROR ${error.response?.status || 'NETWORK'} - ${error.config?.url}`);
+        console.error(`[BB-API] !! ${JSON.stringify(error.response?.data || error.message).substring(0, 300)}`);
         throw error;
       }
     );
@@ -105,17 +79,14 @@ class BigBasketAPI {
 
   /**
    * Decode JWT payload (base64url decode the middle segment)
-   * No verification needed - we just need the claims
    */
   _decodeJWT(token) {
     try {
       const parts = token.split('.');
       if (parts.length !== 3) return null;
       
-      // Base64url decode the payload
       let payload = parts[1];
       payload = payload.replace(/-/g, '+').replace(/_/g, '/');
-      // Add padding if needed
       while (payload.length % 4) payload += '=';
       
       const decoded = Buffer.from(payload, 'base64').toString('utf-8');
@@ -150,7 +121,6 @@ class BigBasketAPI {
   }
 
   _generateVisitorId() {
-    // BigBasket uses a large numeric visitor ID (19 digits)
     return String(Math.floor(Math.random() * 9000000000000000000) + 1000000000000000000);
   }
 
@@ -158,45 +128,33 @@ class BigBasketAPI {
 
   /**
    * Send OTP to phone number
-   * BigBasket login endpoints (try multiple known patterns):
-   * - /mapi/v3.1.0/login/send-otp/  (older Android builds)
-   * - /auth/login/otp/send/          (newer web/app API)  
-   * - /mapi/v4.0.0/login/otp-send/   (v4 migration)
-   * 
-   * @param {string} phoneNumber - 10-digit Indian phone number
+   * Captured: POST /mapi/v4.2.0/login/otp-send/
+   * Body: { "login_id": "9999999999", "login_type": 2, "type": "otp" }
    */
   async sendOTP(phoneNumber) {
-    // Build multiple endpoint attempts (BigBasket changes these frequently)
     const attempts = [
       {
         url: ENDPOINTS.AUTH.SEND_OTP,
         payload: {
           login_id: phoneNumber,
-          login_type: 2,  // 2 = phone number
+          login_type: 2,
           type: 'otp',
         },
       },
       {
-        url: '/auth/login/',
+        url: '/mapi/v4.2.0/login/send-otp/',
         payload: {
-          number: `+91${phoneNumber}`,
+          login_id: phoneNumber,
+          login_type: 2,
           type: 'otp',
-          otp_type: 'sms',
         },
       },
       {
-        url: '/mapi/v4.0.0/auth/login-otp/',
+        url: '/mapi/v3.1.0/login/send-otp/',
         payload: {
-          mobile: phoneNumber,
-          country_code: '+91',
-          loginType: 'otp',
-        },
-      },
-      {
-        url: '/api/v2/member/login/otp-send/',
-        payload: {
-          mobile_number: phoneNumber,
-          country_code: '91',
+          login_id: phoneNumber,
+          login_type: 2,
+          type: 'otp',
         },
       },
     ];
@@ -206,7 +164,6 @@ class BigBasketAPI {
         console.log(`[BB-API] Trying OTP endpoint: ${attempt.url}`);
         const response = await this.client.post(attempt.url, attempt.payload);
         
-        // Check various success indicators BigBasket might use
         if (response.data && 
             (response.data.status === 'success' || 
              response.data.success === true || 
@@ -221,7 +178,6 @@ class BigBasketAPI {
         const errorData = error.response?.data;
         console.log(`[BB-API] Endpoint ${attempt.url} failed: ${status} - ${JSON.stringify(errorData)}`);
         
-        // If we get 404, try next. If we get 4xx with a message, that's the real endpoint
         if (status && status !== 404 && status !== 405 && errorData?.message) {
           return {
             success: false,
@@ -231,24 +187,22 @@ class BigBasketAPI {
             raw: errorData,
           };
         }
-        // Continue to next attempt
       }
     }
 
     return {
       success: false,
-      error: 'All OTP endpoints failed. You need to capture fresh API traffic from the BigBasket APK. See README for instructions.',
-      status: 0,
+      error: 'All OTP endpoints failed. Capture fresh traffic from BigBasket app.',
     };
   }
 
   /**
    * Verify OTP and get access tokens
-   * @param {string} phoneNumber - Phone number
-   * @param {string} otp - 6-digit OTP
-   * @param {string} endpoint - The endpoint that worked for sendOTP (to match verify path)
+   * Captured: POST /mapi/v4.2.0/login/otp-verify/
+   * Body: { "login_id": "9999999999", "login_type": 2, "otp": "123456" }
+   * Response: { "access_token": "jwt...", "member_id": "...", ... }
    */
-  async verifyOTP(phoneNumber, otp, endpoint = null) {
+  async verifyOTP(phoneNumber, otp) {
     const attempts = [
       {
         url: ENDPOINTS.AUTH.VERIFY_OTP,
@@ -260,26 +214,21 @@ class BigBasketAPI {
         },
       },
       {
-        url: '/auth/login/verify/',
+        url: '/mapi/v4.2.0/login/verify-otp/',
         payload: {
-          number: `+91${phoneNumber}`,
+          login_id: phoneNumber,
+          login_type: 2,
           otp: otp,
+          type: 'otp',
         },
       },
       {
-        url: '/mapi/v4.0.0/auth/verify-otp/',
+        url: '/mapi/v3.1.0/login/verify-otp/',
         payload: {
-          mobile: phoneNumber,
-          country_code: '+91',
+          login_id: phoneNumber,
+          login_type: 2,
           otp: otp,
-        },
-      },
-      {
-        url: '/api/v2/member/login/otp-verify/',
-        payload: {
-          mobile_number: phoneNumber,
-          country_code: '91',
-          otp: otp,
+          type: 'otp',
         },
       },
     ];
@@ -290,35 +239,35 @@ class BigBasketAPI {
         const response = await this.client.post(attempt.url, attempt.payload);
         const data = response.data;
 
-        // BigBasket returns a JWT token that contains mid, vid, refresh_token in the payload
+        // Extract token from response (BigBasket uses various field names)
         const accessToken = data.access_token || data.token || data.auth_token || 
-                           data.member?.access_token || data.data?.access_token;
+                           data.member?.access_token || data.data?.access_token ||
+                           data.response?.access_token;
 
         if (accessToken) {
-          // Decode the JWT to extract embedded credentials
           const jwtPayload = this._decodeJWT(accessToken);
           const memberId = jwtPayload?.mid || data.member_id || data.user_id || data.mid;
           const visitorId = jwtPayload?.vid ? String(jwtPayload.vid) : (data.visitor_id || this.visitorId);
           const refreshToken = jwtPayload?.refresh_token || data.refresh_token;
           const userName = data.name || data.user_name || data.member?.name || data.first_name || 'User';
 
-          console.log(`[BB-API] Auth successful via ${attempt.url} | mid=${memberId} vid=${visitorId}`);
+          console.log(`[BB-API] Auth successful | mid=${memberId} vid=${visitorId}`);
           return {
             success: true,
-            data: { accessToken, refreshToken, memberId: String(memberId), visitorId, userName },
+            data: { accessToken, refreshToken, memberId: String(memberId || ''), visitorId, userName },
           };
         }
 
-        // Some endpoints return success but with nested data
-        if (data.status === 'success' || data.success === true) {
-          const nestedToken = data.token || data.session_token;
+        // Check if response indicates success with different structure
+        if (data.status === 'success' || data.success === true || data.status === 0) {
+          const nestedToken = data.token || data.session_token || data.data?.token;
           const jwtPayload = nestedToken ? this._decodeJWT(nestedToken) : null;
           return {
             success: true,
             data: {
-              accessToken: nestedToken || 'token_from_response',
-              refreshToken: jwtPayload?.refresh_token || data.refresh_token || null,
-              memberId: String(jwtPayload?.mid || data.member_id || data.id || ''),
+              accessToken: nestedToken || 'session_token',
+              refreshToken: jwtPayload?.refresh_token || null,
+              memberId: String(jwtPayload?.mid || data.member_id || ''),
               visitorId: jwtPayload?.vid ? String(jwtPayload.vid) : this.visitorId,
               userName: data.name || 'User',
             },
@@ -327,14 +276,12 @@ class BigBasketAPI {
       } catch (error) {
         const status = error.response?.status;
         const errorData = error.response?.data;
-        console.log(`[BB-API] Verify ${attempt.url} failed: ${status} - ${JSON.stringify(errorData)}`);
+        console.log(`[BB-API] Verify ${attempt.url} failed: ${status}`);
         
         if (status && status !== 404 && status !== 405 && errorData?.message) {
           return {
             success: false,
             error: errorData.message || `Verification failed (HTTP ${status})`,
-            status,
-            raw: errorData,
           };
         }
       }
@@ -342,7 +289,7 @@ class BigBasketAPI {
 
     return {
       success: false,
-      error: 'OTP verification failed on all endpoints. Ensure OTP was correct and try /login again.',
+      error: 'OTP verification failed. Check OTP and try /login again.',
     };
   }
 
@@ -360,6 +307,51 @@ class BigBasketAPI {
     }
   }
 
+  // ==================== UI SERVICE (from captured traffic) ====================
+
+  /**
+   * Get header/door info
+   * Captured: GET /ui-svc/v2/header/?send_door_info=true&send_pseudo_door=true&...
+   */
+  async getHeaderInfo() {
+    try {
+      const response = await this.client.get(ENDPOINTS.UI_SERVICE.HEADER, {
+        params: {
+          send_door_info: true,
+          send_pseudo_door: true,
+          send_order_restriction_enabled_door: true,
+          app_launch: true,
+          address_change: false,
+          send_address_set_by_user: true,
+          'enable-pharma-door': true,
+          free_cash_context: '',
+        },
+      });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: 'Failed to fetch header info' };
+    }
+  }
+
+  /**
+   * Get full app data (categories, config, layout)
+   * Captured: GET /ui-svc/v1/app-data?os_name=android&app_version=8.29.1
+   * Response: 33.6kb of app configuration including categories
+   */
+  async getAppData() {
+    try {
+      const response = await this.client.get(ENDPOINTS.UI_SERVICE.APP_DATA, {
+        params: {
+          os_name: 'android',
+          app_version: BB_APP_VERSION,
+        },
+      });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: 'Failed to fetch app data' };
+    }
+  }
+
   // ==================== HOME & NAVIGATION ====================
 
   /**
@@ -367,6 +359,12 @@ class BigBasketAPI {
    */
   async getHomePage() {
     try {
+      // Try the UI service endpoint first (from captured traffic)
+      const appData = await this.getAppData();
+      if (appData.success) {
+        return appData;
+      }
+      // Fallback to mapi endpoint
       const response = await this.client.get(ENDPOINTS.HOME.PAGE);
       return { success: true, data: response.data };
     } catch (error) {
@@ -396,13 +394,25 @@ class BigBasketAPI {
       const response = await this.client.get(ENDPOINTS.CATEGORY.LIST);
       return { success: true, data: response.data };
     } catch (error) {
+      // Fallback: try to get from app-data
+      try {
+        const appData = await this.getAppData();
+        if (appData.success && appData.data) {
+          // Extract categories from app-data response
+          const categories = appData.data.categories || 
+                           appData.data.tabs?.find(t => t.type === 'category')?.data ||
+                           appData.data.data?.categories;
+          if (categories) {
+            return { success: true, data: { categories } };
+          }
+        }
+      } catch (e) {}
       return { success: false, error: 'Failed to fetch categories' };
     }
   }
 
   /**
    * Get sub-categories for a category
-   * @param {string} categoryId - Parent category ID
    */
   async getSubCategories(categoryId) {
     try {
@@ -417,8 +427,6 @@ class BigBasketAPI {
 
   /**
    * Get products by category
-   * @param {string} categoryId - Category ID
-   * @param {number} page - Page number
    */
   async getCategoryProducts(categoryId, page = 1) {
     try {
@@ -435,8 +443,6 @@ class BigBasketAPI {
 
   /**
    * Search products
-   * @param {string} query - Search query
-   * @param {number} page - Page number
    */
   async searchProducts(query, page = 1) {
     try {
@@ -451,7 +457,6 @@ class BigBasketAPI {
 
   /**
    * Get product details
-   * @param {string} productId - Product ID / SKU
    */
   async getProductDetail(productId) {
     try {
@@ -466,7 +471,6 @@ class BigBasketAPI {
 
   /**
    * Get search suggestions
-   * @param {string} query - Partial search query
    */
   async getSearchSuggestions(query) {
     try {
@@ -495,8 +499,6 @@ class BigBasketAPI {
 
   /**
    * Add item to cart
-   * @param {string} productId - Product ID
-   * @param {number} quantity - Quantity
    */
   async addToCart(productId, quantity = 1) {
     try {
@@ -512,7 +514,6 @@ class BigBasketAPI {
 
   /**
    * Remove item from cart
-   * @param {string} productId - Product ID
    */
   async removeFromCart(productId) {
     try {
@@ -527,8 +528,6 @@ class BigBasketAPI {
 
   /**
    * Update cart item quantity
-   * @param {string} productId - Product ID
-   * @param {number} quantity - New quantity
    */
   async updateCartQuantity(productId, quantity) {
     try {
@@ -544,9 +543,6 @@ class BigBasketAPI {
 
   // ==================== ORDERS ====================
 
-  /**
-   * Get order history
-   */
   async getOrders(page = 1) {
     try {
       const response = await this.client.get(ENDPOINTS.ORDER.LIST, {
@@ -558,10 +554,6 @@ class BigBasketAPI {
     }
   }
 
-  /**
-   * Get order details
-   * @param {string} orderId - Order ID
-   */
   async getOrderDetail(orderId) {
     try {
       const response = await this.client.get(ENDPOINTS.ORDER.DETAIL, {
@@ -573,10 +565,6 @@ class BigBasketAPI {
     }
   }
 
-  /**
-   * Place order
-   * @param {object} orderData - Order payload
-   */
   async placeOrder(orderData) {
     try {
       const response = await this.client.post(ENDPOINTS.ORDER.PLACE, orderData);
@@ -588,9 +576,6 @@ class BigBasketAPI {
 
   // ==================== ADDRESS ====================
 
-  /**
-   * Get saved addresses
-   */
   async getAddresses() {
     try {
       const response = await this.client.get(ENDPOINTS.ADDRESS.LIST);
@@ -602,9 +587,6 @@ class BigBasketAPI {
 
   // ==================== DELIVERY SLOTS ====================
 
-  /**
-   * Get available delivery slots
-   */
   async getAvailableSlots() {
     try {
       const response = await this.client.get(ENDPOINTS.SLOT.AVAILABLE);
@@ -616,9 +598,6 @@ class BigBasketAPI {
 
   // ==================== OFFERS ====================
 
-  /**
-   * Get available offers
-   */
   async getOffers() {
     try {
       const response = await this.client.get(ENDPOINTS.OFFERS.LIST);
@@ -628,10 +607,6 @@ class BigBasketAPI {
     }
   }
 
-  /**
-   * Apply coupon code
-   * @param {string} couponCode - Coupon code
-   */
   async applyCoupon(couponCode) {
     try {
       const response = await this.client.post(ENDPOINTS.OFFERS.APPLY_COUPON, {
@@ -640,6 +615,40 @@ class BigBasketAPI {
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: 'Failed to apply coupon' };
+    }
+  }
+
+  // ==================== DEVICE REGISTRATION (captured) ====================
+
+  /**
+   * Register device info with BigBasket
+   * Captured: POST /mapi/v4.2.0/update/device/info/
+   */
+  async registerDevice() {
+    try {
+      const response = await this.client.post(ENDPOINTS.DEVICE.UPDATE_INFO, {
+        device_id: 'android_' + this.visitorId?.substring(0, 16),
+        os_name: 'android',
+        os_version: '13',
+        app_version: BB_APP_VERSION,
+        build_version: BB_BUILD_VERSION,
+        device_model: 'SM-S911B',
+        device_manufacturer: 'samsung',
+      });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: 'Failed to register device' };
+    }
+  }
+
+  // ==================== HEALTH CHECK ====================
+
+  async healthCheck() {
+    try {
+      const response = await this.client.get(ENDPOINTS.HEALTH.CHECK);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: 'Health check failed' };
     }
   }
 }
