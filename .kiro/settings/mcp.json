@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "http-toolkit": {
+      "command": "/Applications/HTTP Toolkit.app/Contents/Resources/httptoolkit-mcp",
+      "args": [],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

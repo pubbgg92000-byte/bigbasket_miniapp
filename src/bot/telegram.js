@@ -18,6 +18,27 @@ function initBot() {
   bot = new TelegramBot(token, { polling: true });
   console.log('[BOT] Telegram bot started successfully');
 
+  // ==================== /shop command ====================
+  bot.onText(/\/shop/, async (msg) => {
+    const chatId = msg.chat.id;
+    const firstName = msg.from.first_name || 'User';
+    const telegramId = msg.from.id;
+    const user = userOps.getUser(telegramId);
+
+    if (user && user.state === USER_STATES.AUTHENTICATED && user.bb_access_token) {
+      await sendMiniAppButton(chatId, firstName);
+    } else {
+      await bot.sendMessage(chatId,
+        '⚠️ Please login first before shopping.',
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔑 Login with Phone', callback_data: 'login' }]]
+          }
+        }
+      );
+    }
+  });
+
   // ==================== /start command ====================
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;

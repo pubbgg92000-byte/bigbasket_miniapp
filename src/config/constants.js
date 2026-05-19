@@ -68,14 +68,17 @@ module.exports = {
 
   // API Endpoint paths (captured from BigBasket v8.29.1 real traffic)
   ENDPOINTS: {
-    // ========== AUTHENTICATION (CONFIRMED from analytics decode) ==========
+    // ========== AUTHENTICATION (CONFIRMED from HTTP Toolkit capture 2026-05-19) ==========
     AUTH: {
-      // Unified Login - handles both OTP send & verify in one endpoint
-      // Confirmed: POST /member-tdl/v3/member/unified-login/
-      // Error code HU4011 = invalid OTP, HTTP 400
-      UNIFIED_LOGIN: '/member-tdl/v3/member/unified-login/',
-      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/member-tdl/v3/member/unified-login/',
+      // Send OTP - CONFIRMED: POST /member-tdl/v3/member/otp/
+      // First call may return 400 if validation fails, 200 on success
+      SEND_OTP: process.env.BB_SEND_OTP_PATH || '/member-tdl/v3/member/otp/',
+      // Verify OTP / Login - CONFIRMED: POST /member-tdl/v3/member/unified-login/
+      // Returns 400 with code HU4011 on wrong OTP, 200 with JWT on success
       VERIFY_OTP: process.env.BB_VERIFY_OTP_PATH || '/member-tdl/v3/member/unified-login/',
+      // Legacy alias (both endpoints are used in the flow)
+      UNIFIED_LOGIN: '/member-tdl/v3/member/unified-login/',
+      OTP_ENDPOINT: '/member-tdl/v3/member/otp/',
       REFRESH_TOKEN: '/member-tdl/v3/member/refresh-token/',
       LOGOUT: '/member-tdl/v3/member/logout/',
     },

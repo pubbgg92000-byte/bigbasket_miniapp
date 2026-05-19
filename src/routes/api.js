@@ -3,6 +3,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const BigBasketAPI = require('../services/bigbasket-api');
 const { userOps, sessionOps, cacheOps, cartOps } = require('../db/database');
+const { validateInitData } = require('../utils/telegram-auth');
 
 /**
  * Middleware: Extract and validate session
@@ -66,12 +67,29 @@ function optionalAuth(req, res, next) {
 
 /**
  * Create session for Mini App (called from Telegram WebApp init)
+ * Validates Telegram initData for security when available
  */
 router.post('/session/create', (req, res) => {
   const { telegram_id, init_data } = req.body;
 
   if (!telegram_id) {
     return res.status(400).json({ error: 'telegram_id required' });
+  }
+
+  // Validate Telegram initData if provided (security check)
+  if (init_data) {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const validation = validateInitData(init_data, botToken);
+    
+    if (!validation.valid) {
+      console.log(`[API] initData validation failed: ${validation.error}`);
+      // In production, you'd reject here. For dev, we log and continue.
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(403).json({ error: 'Invalid Telegram authentication' });
+      }
+    } else {
+      console.log(`[API] Telegram user verified: ${validation.user?.id}`);
+    }
   }
 
   const user = userOps.getUser(parseInt(telegram_id));
