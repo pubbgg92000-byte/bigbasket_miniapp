@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const BigBasketAPI = require('../services/bigbasket-api');
-const { userOps, sessionOps, cacheOps, cartOps } = require('../db/database');
+const { userOps, accountOps, sessionOps, cacheOps, cartOps } = require('../db/database');
 const { validateInitData } = require('../utils/telegram-auth');
 
 /**

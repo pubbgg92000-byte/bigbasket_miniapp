@@ -1,0 +1,115 @@
+[
+  {
+    "id": "7f6cfdf5-3fd0-4210-b6c7-44ccd2fe03af",
+    "outline": {
+      "method": "POST",
+      "url": "https://www.bigbasket.com/member-tdl/v3/member/otp/",
+      "status": 400,
+      "timestamp": 1779164360580
+    },
+    "request": {
+      "identifier": "[REDACTED_PHONE]",
+      "referrer": "unified_login"
+    },
+    "response": {
+      "errors": [
+        {
+          "code_str": "HU4001",
+          "display_msg": "Your account does not exist/inactive. Please contact our customer care. Call: 1860-123-1000 or Email: customerservice@bigbasket.com.",
+          "msg": "Your account does not exist/inactive. Please contact our customer care. Call: 1860-123-1000 or Email: customerservice@bigbasket.com.",
+          "code": 0,
+          "type": ""
+        }
+      ]
+    }
+  },
+  {
+    "id": "5a6ddb0c-ddc1-47d2-be21-ae34252855df",
+    "outline": {
+      "method": "POST",
+      "url": "https://www.bigbasket.com/member-tdl/v3/member/otp/",
+      "status": 200,
+      "timestamp": 1779164376688
+    },
+    "request": {
+      "identifier": "[REDACTED_PHONE]",
+      "referrer": "unified_login"
+    },
+    "response": {
+      "show_message": true,
+      "message": "OTP sent successfully",
+      "refId": "[REDACTED]"
+    }
+  },
+  {
+    "id": "15081909-c06c-4b12-b9a4-78841501c28d",
+    "outline": {
+      "method": "POST",
+      "url": "https://www.bigbasket.com/member-tdl/v3/member/otp/",
+      "status": 200,
+      "timestamp": 1779164413623
+    },
+    "request": {
+      "identifier": "[REDACTED_PHONE]",
+      "referrer": "unified_login"
+    },
+    "response": {
+      "show_message": true,
+      "message": "OTP sent successfully",
+      "refId": "[REDACTED]"
+    }
+  },
+  {
+    "id": "28e56362-dda9-4df4-873d-b8d92c993e75",
+    "outline": {
+      "method": "POST",
+      "url": "https://www.bigbasket.com/member-tdl/v3/member/unified-login/",
+      "status": 400,
+      "timestamp": 1779164432806
+    },
+    "request": {
+      "mobile_no": "[REDACTED_PHONE]",
+      "mobile_no_otp": "[REDACTED_OTP]",
+      "refId": "87bb43e6-c3f3-4ad8-8d6a-6063df9f025b"
+    },
+    "response": {
+      "errors": [
+        {
+          "code_str": "HU4011",
+          "display_msg": "Please Enter Valid OTP.",
+          "msg": "Please Enter Valid OTP.",
+          "code": 0,
+          "type": ""
+        }
+      ]
+    }
+  },
+  {
+    "id": "8f8a562b-8097-4742-997a-ee50a9815460",
+    "outline": {
+      "method": "POST",
+      "url": "https://www.bigbasket.com/member-tdl/v3/member/unified-login/",
+      "status": 200,
+      "timestamp": 1779164442069
+    },
+    "request": {
+      "mobile_no": "[REDACTED_PHONE]",
+      "mobile_no_otp": "[REDACTED_OTP]",
+      "refId": "87bb43e6-c3f3-4ad8-8d6a-6063df9f025b"
+    },
+    "response": {
+      "visitor_id": "[REDACTED]",
+      "m_id": "[REDACTED]",
+      "bb_token": "[REDACTED]",
+      "first_name": "Bigbasketeer",
+      "last_name": "bathi",
+      "email": "[REDACTED]",
+      "ec_id": 10,
+      "is_signup": false,
+      "need_review": false,
+      "tdl_token": "[REDACTED]",
+      "referral_code": "[REDACTED]",
+      "customer_hash": "[REDACTED]"
+    }
+  }
+]

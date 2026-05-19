@@ -1,43 +1,37 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { v4: uuidv4 } = require('uuid');
 const { USER_STATES } = require('../config/constants');
-const { userOps, sessionOps } = require('../db/database');
+const { userOps, accountOps, sessionOps } = require('../db/database');
 const BigBasketAPI = require('../services/bigbasket-api');
 
 let bot;
 
+/**
+ * Match reply keyboard button text to an action
+ */
+function matchReplyButton(text) {
+  const map = {
+    '🛍️ Shop': 'shop',
+    '➕ Add Account': 'add_account',
+    '👥 My Accounts': 'my_accounts',
+    '👤 Profile': 'profile',
+    '📦 Orders': 'orders',
+    '❓ Help': 'help',
+    '🚪 Logout': 'logout',
+  };
+  return map[text] || null;
+}
+
 function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  
+
   if (!token || token === 'your_telegram_bot_token_here') {
     console.log('[BOT] No valid Telegram bot token found. Bot disabled.');
-    console.log('[BOT] Set TELEGRAM_BOT_TOKEN in .env to enable the bot.');
     return null;
   }
 
   bot = new TelegramBot(token, { polling: true });
   console.log('[BOT] Telegram bot started successfully');
-
-  // ==================== /shop command ====================
-  bot.onText(/\/shop/, async (msg) => {
-    const chatId = msg.chat.id;
-    const firstName = msg.from.first_name || 'User';
-    const telegramId = msg.from.id;
-    const user = userOps.getUser(telegramId);
-
-    if (user && user.state === USER_STATES.AUTHENTICATED && user.bb_access_token) {
-      await sendMiniAppButton(chatId, firstName);
-    } else {
-      await bot.sendMessage(chatId,
-        '⚠️ Please login first before shopping.',
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: '🔑 Login with Phone', callback_data: 'login' }]]
-          }
-        }
-      );
-    }
-  });
 
   // ==================== /start command ====================
   bot.onText(/\/start/, async (msg) => {
@@ -46,16 +40,35 @@ function initBot() {
     const firstName = msg.from.first_name || 'User';
 
     userOps.createUser(telegramId);
-    const user = userOps.getUser(telegramId);
+    const accounts = accountOps.getAccounts(telegramId);
 
-    if (user && user.state === USER_STATES.AUTHENTICATED && user.bb_access_token) {
-      await sendMainMenu(chatId, firstName);
+    if (accounts.length > 0) {
+      await sendMainMenu(chatId, firstName, telegramId);
     } else {
       await sendWelcome(chatId, firstName);
     }
   });
 
-  // ==================== CALLBACK QUERIES (Button clicks) ====================
+  // ==================== /shop command ====================
+  bot.onText(/\/shop/, async (msg) => {
+    const chatId = msg.chat.id;
+    const firstName = msg.from.first_name || 'User';
+    const telegramId = msg.from.id;
+    const active = accountOps.getActiveAccount(telegramId);
+
+    if (active && active.bb_access_token) {
+      await sendMiniAppButton(chatId, firstName);
+    } else {
+      await bot.sendMessage(chatId, '⚠️ No active account. Please login or switch account.', {
+        reply_markup: { inline_keyboard: [
+          [{ text: '➕ Add Account', callback_data: 'add_account' }],
+          [{ text: '👥 My Accounts', callback_data: 'my_accounts' }],
+        ]}
+      });
+    }
+  });
+
+  // ==================== CALLBACK QUERIES ====================
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const telegramId = query.from.id;
@@ -64,7 +77,32 @@ function initBot() {
 
     await bot.answerCallbackQuery(query.id);
 
+    // Handle switch_account_<id> callbacks
+    if (data.startsWith('switch_')) {
+      const accountId = parseInt(data.replace('switch_', ''));
+      const account = accountOps.switchAccount(telegramId, accountId);
+      if (account) {
+        await bot.sendMessage(chatId,
+          `✅ Switched to account: *+91${account.phone_number}*${account.name ? ` (${account.name})` : ''}`,
+          { parse_mode: 'Markdown' }
+        );
+        await sendMainMenu(chatId, firstName, telegramId);
+      }
+      return;
+    }
+
+    // Handle remove_account_<id> callbacks
+    if (data.startsWith('remove_')) {
+      const accountId = parseInt(data.replace('remove_', ''));
+      const account = accountOps.getAccountById(accountId);
+      accountOps.removeAccount(telegramId, accountId);
+      await bot.sendMessage(chatId, `🗑️ Removed account: +91${account?.phone_number || 'unknown'}`);
+      await showAccounts(chatId, telegramId);
+      return;
+    }
+
     switch (data) {
+      case 'add_account':
       case 'login':
         userOps.createUser(telegramId);
         userOps.updateUserState(telegramId, USER_STATES.AWAITING_PHONE);
@@ -75,14 +113,8 @@ function initBot() {
         );
         break;
 
-      case 'login_another':
-        userOps.clearUserSession(telegramId);
-        userOps.updateUserState(telegramId, USER_STATES.AWAITING_PHONE);
-        await bot.sendMessage(chatId,
-          '📱 *Enter a new phone number*\n\n' +
-          'Enter 10-digit number linked to BigBasket:',
-          { parse_mode: 'Markdown' }
-        );
+      case 'my_accounts':
+        await showAccounts(chatId, telegramId);
         break;
 
       case 'open_shop':
@@ -94,21 +126,36 @@ function initBot() {
         break;
 
       case 'logout':
-        userOps.clearUserSession(telegramId);
-        await bot.sendMessage(chatId,
-          '✅ You have been logged out.\n\nTap below to login again:',
-          {
-            reply_markup: {
-              inline_keyboard: [[
-                { text: '🔑 Login with Phone', callback_data: 'login' }
-              ]]
-            }
+        const active = accountOps.getActiveAccount(telegramId);
+        if (active) {
+          accountOps.removeAccount(telegramId, active.id);
+          await bot.sendMessage(chatId, `✅ Logged out from +91${active.phone_number}`);
+          const remaining = accountOps.getAccounts(telegramId);
+          if (remaining.length > 0) {
+            await showAccounts(chatId, telegramId);
+          } else {
+            await sendWelcome(chatId, firstName);
           }
-        );
+        } else {
+          await sendWelcome(chatId, firstName);
+        }
         break;
 
       case 'help':
         await sendHelp(chatId);
+        break;
+
+      case 'my_orders':
+        const activeAcc = accountOps.getActiveAccount(telegramId);
+        if (activeAcc?.bb_access_token) {
+          await bot.sendMessage(chatId, `📦 Orders for +91${activeAcc.phone_number}.\nOpen the Mini App to view:`, {
+            reply_markup: { inline_keyboard: [[{ text: '🛍️ Open Shop', callback_data: 'open_shop' }]] }
+          });
+        } else {
+          await bot.sendMessage(chatId, '⚠️ No active account.', {
+            reply_markup: { inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }]] }
+          });
+        }
         break;
 
       case 'resend_otp':
@@ -122,7 +169,7 @@ function initBot() {
     }
   });
 
-  // ==================== Handle text messages (phone & OTP) ====================
+  // ==================== Handle text messages ====================
   bot.on('message', async (msg) => {
     if (msg.contact) return;
     if (msg.text && msg.text.startsWith('/')) return;
@@ -133,6 +180,50 @@ function initBot() {
     const text = msg.text.trim();
     const firstName = msg.from.first_name || 'User';
 
+    // Handle reply keyboard buttons
+    const buttonAction = matchReplyButton(text);
+    if (buttonAction) {
+      switch (buttonAction) {
+        case 'shop':
+          const active = accountOps.getActiveAccount(telegramId);
+          if (active?.bb_access_token) return sendMiniAppButton(chatId, firstName);
+          return bot.sendMessage(chatId, '⚠️ No active account.', {
+            reply_markup: { inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }], [{ text: '👥 My Accounts', callback_data: 'my_accounts' }]] }
+          });
+        case 'add_account':
+          userOps.createUser(telegramId);
+          userOps.updateUserState(telegramId, USER_STATES.AWAITING_PHONE);
+          return bot.sendMessage(chatId, '📱 *Enter your 10-digit phone number:*', { parse_mode: 'Markdown' });
+        case 'my_accounts':
+          return showAccounts(chatId, telegramId);
+        case 'profile':
+          return showProfile(chatId, telegramId);
+        case 'orders':
+          const acc = accountOps.getActiveAccount(telegramId);
+          if (acc?.bb_access_token) {
+            return bot.sendMessage(chatId, '📦 Open the Mini App to view orders.', {
+              reply_markup: { inline_keyboard: [[{ text: '🛍️ Open Shop', callback_data: 'open_shop' }]] }
+            });
+          }
+          return bot.sendMessage(chatId, '⚠️ No active account.', {
+            reply_markup: { inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }]] }
+          });
+        case 'help':
+          return sendHelp(chatId);
+        case 'logout':
+          const activeAcc = accountOps.getActiveAccount(telegramId);
+          if (activeAcc) {
+            accountOps.removeAccount(telegramId, activeAcc.id);
+            await bot.sendMessage(chatId, `✅ Logged out from +91${activeAcc.phone_number}`);
+          }
+          const remaining = accountOps.getAccounts(telegramId);
+          if (remaining.length > 0) return showAccounts(chatId, telegramId);
+          return sendWelcome(chatId, firstName);
+      }
+      return;
+    }
+
+    // State-based handling (phone/OTP input)
     const user = userOps.getUser(telegramId);
     if (!user) {
       userOps.createUser(telegramId);
@@ -143,17 +234,16 @@ function initBot() {
       case USER_STATES.AWAITING_PHONE:
         await handlePhoneNumber(chatId, telegramId, text);
         break;
-
       case USER_STATES.AWAITING_OTP:
         await handleOTP(chatId, telegramId, text, firstName);
         break;
-
-      case USER_STATES.AUTHENTICATED:
-        await sendMainMenu(chatId, firstName);
-        break;
-
       default:
-        await sendWelcome(chatId, firstName);
+        const accounts = accountOps.getAccounts(telegramId);
+        if (accounts.length > 0) {
+          await sendMainMenu(chatId, firstName, telegramId);
+        } else {
+          await sendWelcome(chatId, firstName);
+        }
     }
   });
 
@@ -172,39 +262,111 @@ function initBot() {
 async function sendWelcome(chatId, firstName) {
   await bot.sendMessage(chatId,
     `🛒 *Welcome to BigBasket, ${firstName}!*\n\n` +
-    `Shop fresh groceries right here in Telegram.\n\n` +
-    `Tap the button below to get started:`,
+    `Shop fresh groceries right here in Telegram.\n` +
+    `You can add multiple BigBasket accounts and switch between them anytime.\n\n` +
+    `Tap below to get started:`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔑 Login with Phone Number', callback_data: 'login' }],
+          [{ text: '➕ Add BigBasket Account', callback_data: 'add_account' }],
           [{ text: '❓ Help', callback_data: 'help' }],
         ]
       }
     }
   );
+  await sendReplyKeyboard(chatId);
 }
 
-// ==================== MAIN MENU (after login) ====================
-async function sendMainMenu(chatId, firstName) {
+// ==================== MAIN MENU ====================
+async function sendMainMenu(chatId, firstName, telegramId) {
   const miniAppUrl = process.env.MINI_APP_URL || `http://localhost:${process.env.PORT || 3000}/miniapp`;
+  const active = accountOps.getActiveAccount(telegramId);
+  const accounts = accountOps.getAccounts(telegramId);
+
+  let statusLine = '';
+  if (active) {
+    statusLine = `📱 Active: +91${active.phone_number}${active.name ? ` (${active.name})` : ''}\n`;
+    statusLine += `👥 Total accounts: ${accounts.length}\n`;
+  }
 
   await bot.sendMessage(chatId,
     `✅ *Welcome back, ${firstName}!*\n\n` +
-    `You're logged in to BigBasket. What would you like to do?`,
+    `${statusLine}\n` +
+    `What would you like to do?`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
           [{ text: '🛍️ Open BigBasket Shop', web_app: { url: miniAppUrl } }],
-          [{ text: '🔄 Login Another Number', callback_data: 'login_another' }],
-          [{ text: '👤 My Profile', callback_data: 'my_profile' }],
-          [{ text: '🚪 Logout', callback_data: 'logout' }],
+          [{ text: '👥 My Accounts', callback_data: 'my_accounts' }, { text: '➕ Add Account', callback_data: 'add_account' }],
+          [{ text: '👤 Profile', callback_data: 'my_profile' }, { text: '📦 Orders', callback_data: 'my_orders' }],
+          [{ text: '❓ Help', callback_data: 'help' }, { text: '🚪 Logout', callback_data: 'logout' }],
         ]
       }
     }
   );
+  await sendReplyKeyboard(chatId);
+}
+
+// ==================== PERSISTENT REPLY KEYBOARD ====================
+async function sendReplyKeyboard(chatId) {
+  await bot.sendMessage(chatId, '⌨️', {
+    reply_markup: {
+      keyboard: [
+        [{ text: '🛍️ Shop' }, { text: '👥 My Accounts' }],
+        [{ text: '➕ Add Account' }, { text: '👤 Profile' }],
+        [{ text: '📦 Orders' }, { text: '❓ Help' }],
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+    }
+  });
+}
+
+// ==================== SHOW ACCOUNTS ====================
+async function showAccounts(chatId, telegramId) {
+  const accounts = accountOps.getAccounts(telegramId);
+
+  if (accounts.length === 0) {
+    return bot.sendMessage(chatId,
+      '📱 *No accounts added yet*\n\nAdd your first BigBasket account:',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }]]
+        }
+      }
+    );
+  }
+
+  let msg = `👥 *Your BigBasket Accounts* (${accounts.length})\n\n`;
+  const buttons = [];
+
+  accounts.forEach((acc, i) => {
+    const activeIcon = acc.is_active ? '✅' : '⚪';
+    const name = acc.name ? ` - ${acc.name}` : '';
+    msg += `${activeIcon} ${i + 1}. +91${acc.phone_number}${name}\n`;
+
+    if (!acc.is_active) {
+      buttons.push([
+        { text: `🔄 Switch to +91${acc.phone_number}`, callback_data: `switch_${acc.id}` },
+        { text: `🗑️`, callback_data: `remove_${acc.id}` },
+      ]);
+    } else {
+      buttons.push([
+        { text: `✅ Active: +91${acc.phone_number}`, callback_data: 'noop' },
+        { text: `🗑️`, callback_data: `remove_${acc.id}` },
+      ]);
+    }
+  });
+
+  buttons.push([{ text: '➕ Add New Account', callback_data: 'add_account' }]);
+
+  await bot.sendMessage(chatId, msg, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: buttons }
+  });
 }
 
 // ==================== HANDLE PHONE NUMBER ====================
@@ -214,14 +376,19 @@ async function handlePhoneNumber(chatId, telegramId, phoneNumber) {
   if (cleanPhone.length !== 10) {
     return bot.sendMessage(chatId,
       '❌ Invalid phone number.\n\nPlease enter a valid 10-digit Indian mobile number:',
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 Back to Start', callback_data: 'login' }]
-          ]
-        }
-      }
+      { reply_markup: { inline_keyboard: [[{ text: '🔙 Cancel', callback_data: 'my_accounts' }]] } }
     );
+  }
+
+  // Check if already logged in with this number
+  const existing = accountOps.getAccountByPhone(telegramId, cleanPhone);
+  if (existing && existing.bb_access_token) {
+    accountOps.switchAccount(telegramId, existing.id);
+    userOps.updateUserState(telegramId, USER_STATES.AUTHENTICATED);
+    await bot.sendMessage(chatId,
+      `✅ Already logged in with +91${cleanPhone}. Switched to this account.`,
+    );
+    return sendMainMenu(chatId, '', telegramId);
   }
 
   userOps.updateUserPhone(telegramId, cleanPhone);
@@ -237,15 +404,18 @@ async function sendOTPToPhone(chatId, telegramId, phoneNumber) {
 
   if (result.success) {
     userOps.updateUserState(telegramId, USER_STATES.AWAITING_OTP);
+    const channelMsg = result.data?.channel === 'voice' 
+      ? '📞 You will receive a *voice call* with the OTP.'
+      : '📱 Check your SMS for the OTP.';
     await bot.sendMessage(chatId,
-      `✅ *OTP sent to +91${phoneNumber}*\n\n` +
-      `Please enter the 6-digit OTP you received:`,
+      `✅ *OTP sent to +91${phoneNumber}*\n\n${channelMsg}\nPlease enter the OTP you received:`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔄 Resend OTP', callback_data: 'resend_otp' }],
-            [{ text: '📱 Change Number', callback_data: 'login' }],
+            [{ text: '📱 Change Number', callback_data: 'add_account' }],
+            [{ text: '🔙 Cancel', callback_data: 'my_accounts' }],
           ]
         }
       }
@@ -253,15 +423,13 @@ async function sendOTPToPhone(chatId, telegramId, phoneNumber) {
   } else {
     console.error('[BOT] OTP send failed:', JSON.stringify(result));
     await bot.sendMessage(chatId,
-      `❌ *Failed to send OTP*\n\n` +
-      `Reason: ${result.error}\n\n` +
-      `Please try again:`,
+      `❌ *Failed to send OTP*\n\nReason: ${result.error}`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🔄 Try Again', callback_data: 'login' }],
-            [{ text: '📱 Different Number', callback_data: 'login_another' }],
+            [{ text: '🔄 Try Again', callback_data: 'add_account' }],
+            [{ text: '👥 My Accounts', callback_data: 'my_accounts' }],
           ]
         }
       }
@@ -280,7 +448,7 @@ async function handleOTP(chatId, telegramId, otp, firstName) {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔄 Resend OTP', callback_data: 'resend_otp' }],
-            [{ text: '📱 Change Number', callback_data: 'login' }],
+            [{ text: '📱 Change Number', callback_data: 'add_account' }],
           ]
         }
       }
@@ -290,15 +458,9 @@ async function handleOTP(chatId, telegramId, otp, firstName) {
   const user = userOps.getUser(telegramId);
   if (!user || !user.phone_number) {
     userOps.updateUserState(telegramId, USER_STATES.AWAITING_PHONE);
-    return bot.sendMessage(chatId, '⚠️ Session expired. Please enter your phone number again.',
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔑 Login Again', callback_data: 'login' }]
-          ]
-        }
-      }
-    );
+    return bot.sendMessage(chatId, '⚠️ Session expired. Please try again.', {
+      reply_markup: { inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }]] }
+    });
   }
 
   await bot.sendMessage(chatId, '🔐 Verifying OTP...');
@@ -307,38 +469,41 @@ async function handleOTP(chatId, telegramId, otp, firstName) {
   const result = await bbApi.verifyOTP(user.phone_number, cleanOTP);
 
   if (result.success) {
-    // Store tokens
-    userOps.updateUserTokens(telegramId, {
+    // Store account (multi-account)
+    accountOps.upsertAccount(telegramId, {
+      phone: user.phone_number,
       accessToken: result.data.accessToken,
       refreshToken: result.data.refreshToken,
       memberId: result.data.memberId,
       visitorId: result.data.visitorId,
+      name: result.data.userName || null,
     });
+
+    userOps.updateUserState(telegramId, USER_STATES.AUTHENTICATED);
 
     // Create session for Mini App
     const sessionId = uuidv4();
     sessionOps.createSession(sessionId, telegramId);
 
     const name = result.data.userName || firstName;
+    const totalAccounts = accountOps.getAccounts(telegramId).length;
+
     await bot.sendMessage(chatId,
       `🎉 *Login Successful!*\n\n` +
-      `Welcome, ${name}! You're now connected to BigBasket.\n\n` +
+      `Account +91${user.phone_number} added.${totalAccounts > 1 ? `\nYou now have ${totalAccounts} accounts.` : ''}\n\n` +
       `Tap below to start shopping:`,
       { parse_mode: 'Markdown' }
     );
-    await sendMainMenu(chatId, name);
+    await sendMainMenu(chatId, name, telegramId);
   } else {
     await bot.sendMessage(chatId,
-      `❌ *OTP Verification Failed*\n\n` +
-      `${result.error}\n\n` +
-      `Please try again:`,
+      `❌ *OTP Verification Failed*\n\n${result.error}`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔄 Resend OTP', callback_data: 'resend_otp' }],
-            [{ text: '📱 Change Number', callback_data: 'login' }],
-            [{ text: '🔙 Back to Start', callback_data: 'login' }],
+            [{ text: '📱 Change Number', callback_data: 'add_account' }],
           ]
         }
       }
@@ -348,35 +513,34 @@ async function handleOTP(chatId, telegramId, otp, firstName) {
 
 // ==================== SHOW PROFILE ====================
 async function showProfile(chatId, telegramId) {
-  const user = userOps.getUser(telegramId);
-  if (!user || !user.bb_access_token) {
-    return bot.sendMessage(chatId, '⚠️ Not logged in.',
-      {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🔑 Login', callback_data: 'login' }]]
-        }
-      }
-    );
+  const active = accountOps.getActiveAccount(telegramId);
+  if (!active || !active.bb_access_token) {
+    return bot.sendMessage(chatId, '⚠️ No active account.', {
+      reply_markup: { inline_keyboard: [[{ text: '➕ Add Account', callback_data: 'add_account' }]] }
+    });
   }
 
-  const bbApi = new BigBasketAPI(user.bb_access_token);
+  const bbApi = new BigBasketAPI(active.bb_access_token);
   const tokenInfo = bbApi.getTokenInfo();
+  const accounts = accountOps.getAccounts(telegramId);
 
-  let msg = `👤 *Your Profile*\n\n`;
-  msg += `📱 Phone: +91${user.phone_number || 'Unknown'}\n`;
-  msg += `🆔 Member ID: ${user.bb_member_id || tokenInfo?.memberId || 'Unknown'}\n`;
+  let msg = `👤 *Active Account*\n\n`;
+  msg += `📱 Phone: +91${active.phone_number}\n`;
+  msg += `👤 Name: ${active.name || 'Unknown'}\n`;
+  msg += `🆔 Member ID: ${active.bb_member_id || tokenInfo?.memberId || 'Unknown'}\n`;
   if (tokenInfo) {
     msg += `📅 Token Expires: ${tokenInfo.expiresAt || 'Unknown'}\n`;
-    msg += `⏰ Expired: ${tokenInfo.isExpired ? '⚠️ YES' : '✅ No'}\n`;
+    msg += `⏰ Status: ${tokenInfo.isExpired ? '⚠️ Expired' : '✅ Active'}\n`;
   }
+  msg += `\n👥 Total accounts: ${accounts.length}`;
 
   await bot.sendMessage(chatId, msg, {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
+        [{ text: '👥 My Accounts', callback_data: 'my_accounts' }],
         [{ text: '🛍️ Open Shop', callback_data: 'open_shop' }],
-        [{ text: '🔄 Login Another Number', callback_data: 'login_another' }],
-        [{ text: '🚪 Logout', callback_data: 'logout' }],
+        [{ text: '➕ Add Account', callback_data: 'add_account' }],
       ]
     }
   });
@@ -387,21 +551,24 @@ async function sendHelp(chatId) {
   await bot.sendMessage(chatId,
     `🛒 *BigBasket Mini App - Help*\n\n` +
     `*How it works:*\n` +
-    `1️⃣ Login with your phone number\n` +
-    `2️⃣ Enter the OTP sent to your phone\n` +
-    `3️⃣ Open the Mini App to browse & shop\n\n` +
-    `*Features:*\n` +
-    `• Browse all BigBasket products\n` +
-    `• Search for items\n` +
-    `• Add to cart & checkout\n` +
-    `• View order history\n` +
-    `• Multiple accounts supported\n\n` +
-    `Each phone number has its own separate profile, cart, and orders.`,
+    `1️⃣ Add your BigBasket account (phone + OTP)\n` +
+    `2️⃣ Add multiple accounts if needed\n` +
+    `3️⃣ Switch between accounts anytime\n` +
+    `4️⃣ Open the Mini App to browse & shop\n\n` +
+    `*Commands:*\n` +
+    `• 👥 My Accounts - View & switch accounts\n` +
+    `• ➕ Add Account - Login a new number\n` +
+    `• 🛍️ Shop - Open the Mini App\n` +
+    `• 👤 Profile - View active account info\n` +
+    `• 📦 Orders - View order history\n` +
+    `• 🚪 Logout - Remove active account\n\n` +
+    `Each account keeps its own session permanently until you remove it.`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔑 Login Now', callback_data: 'login' }],
+          [{ text: '➕ Add Account', callback_data: 'add_account' }],
+          [{ text: '👥 My Accounts', callback_data: 'my_accounts' }],
         ]
       }
     }
@@ -413,7 +580,7 @@ async function sendMiniAppButton(chatId, name) {
   const miniAppUrl = process.env.MINI_APP_URL || `http://localhost:${process.env.PORT || 3000}/miniapp`;
 
   await bot.sendMessage(chatId,
-    `🛒 *Open BigBasket*\n\nHey ${name}, tap below to browse groceries!`,
+    `🛒 *Open BigBasket*\n\nHey ${name || 'there'}, tap below to browse groceries!`,
     {
       parse_mode: 'Markdown',
       reply_markup: {

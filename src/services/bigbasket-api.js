@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 const { BB_BASE_URL, DEFAULT_HEADERS, WEB_HEADERS, ENDPOINTS, BB_APP_VERSION, BB_BUILD_VERSION } = require('../config/constants');
 
 /**
@@ -35,6 +36,8 @@ class BigBasketAPI {
 
     // Build headers matching captured BigBasket Android traffic
     const headers = { ...DEFAULT_HEADERS };
+    // Fresh tracker per request instance
+    headers['X-Tracker'] = uuidv4();
 
     // Add auth headers when authenticated
     if (accessToken) {
@@ -54,11 +57,15 @@ class BigBasketAPI {
     this.client = axios.create({
       baseURL: BB_BASE_URL,
       timeout: 30000,
+      maxRedirects: 0,
+      decompress: false,
       headers,
     });
 
-    // Request interceptor for logging
+    // Intercept requests to remove Accept-Encoding and log
     this.client.interceptors.request.use((config) => {
+      delete config.headers['Accept-Encoding'];
+      delete config.headers['accept-encoding'];
       console.log(`[BB-API] >> ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
       return config;
     });
@@ -127,200 +134,190 @@ class BigBasketAPI {
   // ==================== AUTHENTICATION ====================
 
   /**
-   * Send OTP to phone number
-   * CONFIRMED from HTTP Toolkit capture: POST /member-tdl/v3/member/otp/
-   * This is a SEPARATE endpoint from unified-login (which is for verify)
-   * First call may return 400 if phone validation fails, 200 on success
+   * Send OTP to phone number using curl (bypasses TLS fingerprinting)
+   * BigBasket's Akamai CDN fingerprints Node.js TLS and returns 500
+   * Using curl with native TLS avoids this
    */
   async sendOTP(phoneNumber) {
-    const attempts = [
-      // CONFIRMED: /member-tdl/v3/member/otp/ (from HTTP Toolkit capture 2026-05-19)
-      {
-        url: ENDPOINTS.AUTH.SEND_OTP,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          type: 'otp',
-          action: 'send_otp',
-        },
-      },
-      // Same endpoint, different body format
-      {
-        url: ENDPOINTS.AUTH.SEND_OTP,
-        payload: {
-          loginId: phoneNumber,
-          loginType: 'otp',
-          otpType: 'sms',
-          action: 'send',
-        },
-      },
-      // Same endpoint, minimal format
-      {
-        url: ENDPOINTS.AUTH.SEND_OTP,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          otp_type: 'sms',
-        },
-      },
-      // Fallback: try unified-login endpoint for send
-      {
-        url: ENDPOINTS.AUTH.UNIFIED_LOGIN,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          type: 'otp',
-          action: 'send_otp',
-        },
-      },
-    ];
+    const cleanPhone = phoneNumber.replace(/^\+91/, '').replace(/[^0-9]/g, '');
+    const { execSync } = require('child_process');
+    const { v4: uuidv4 } = require('uuid');
 
-    for (const attempt of attempts) {
+    const channels = ['sms', 'voice'];
+
+    for (const channel of channels) {
       try {
-        console.log(`[BB-API] Trying OTP endpoint: ${attempt.url}`);
-        const response = await this.client.post(attempt.url, attempt.payload);
-        
-        if (response.data && 
-            (response.data.status === 'success' || 
-             response.data.success === true || 
-             response.data.status === 0 ||
-             response.data.response_code === 200 ||
-             response.status === 200)) {
-          console.log(`[BB-API] OTP sent successfully via ${attempt.url}`);
-          return { success: true, data: response.data, endpoint: attempt.url };
+        const payload = JSON.stringify({ identifier: cleanPhone, channel, type: 'login' });
+        const tracker = uuidv4();
+
+        const curlCmd = `curl -s -X POST 'https://www.bigbasket.com/member-tdl/v3/member/otp/' ` +
+          `-H 'Content-Type: application/json' ` +
+          `-H 'Accept: application/json' ` +
+          `-H 'User-Agent: Dalvik/2.1.0 (Linux; U; Android 13; SM-S911B Build/TP1A.220624.014)' ` +
+          `-H 'X-Channel: BB-Android' ` +
+          `-H 'X-Caller: app' ` +
+          `-H 'X-App-Version: 8.29.1' ` +
+          `-H 'X-Build-Version: 25110910' ` +
+          `-H 'X-Tracker: ${tracker}' ` +
+          `-H 'X-Entry-Context: hp' ` +
+          `-H 'X-Entry-Context-Id: 1' ` +
+          `-d '${payload}' -w '\\n%{http_code}' --max-time 15`;
+
+        console.log(`[BB-API] Sending OTP via curl (${channel}): ${cleanPhone}`);
+        const output = execSync(curlCmd, { encoding: 'utf-8', timeout: 20000 });
+        const lines = output.trim().split('\n');
+        const httpCode = parseInt(lines[lines.length - 1]);
+        const body = lines.slice(0, -1).join('\n').trim();
+
+        console.log(`[BB-API] OTP response (${channel}): HTTP ${httpCode} - ${body.substring(0, 150)}`);
+
+        if (httpCode === 200) {
+          let data = {};
+          try { data = JSON.parse(body); } catch (e) {}
+          return { success: true, data: { ...data, channel }, endpoint: '/member-tdl/v3/member/otp/' };
         }
-      } catch (error) {
-        const status = error.response?.status;
-        const errorData = error.response?.data;
-        console.log(`[BB-API] Endpoint ${attempt.url} failed: ${status} - ${JSON.stringify(errorData)}`);
-        
-        if (status && status !== 404 && status !== 405 && errorData?.message) {
-          return {
-            success: false,
-            error: errorData.message || `Failed (HTTP ${status})`,
-            status,
-            endpoint: attempt.url,
-            raw: errorData,
-          };
+
+        if (httpCode === 400) {
+          let errorData = {};
+          try { errorData = JSON.parse(body); } catch (e) {}
+          const errors = errorData.errors || [];
+          const errorCode = errors[0]?.code_str || '';
+          const errorMsg = errors[0]?.msg || errors[0]?.display_msg || '';
+
+          if (errorCode === 'HU4001') {
+            return { success: false, error: 'This phone number is not registered with BigBasket.', code: errorCode };
+          }
+          if (errorCode === 'HU4012') {
+            return { success: false, error: 'Invalid mobile number format. Enter a valid 10-digit number.', code: errorCode };
+          }
+          if (errorCode === 'HU4002') {
+            return { success: false, error: errorMsg || 'Too many OTP attempts. Try again later.', code: errorCode };
+          }
+          if (errorCode && errorCode !== 'HU4000') {
+            return { success: false, error: errorMsg || `Error: ${errorCode}`, code: errorCode };
+          }
+          // HU4000 = invalid format, try next channel
+          console.log(`[BB-API] Got HU4000 on ${channel}, trying next`);
         }
+
+        if (httpCode === 500) {
+          console.log(`[BB-API] Got 500 on ${channel} - rate limited, trying next channel`);
+          // Try next channel
+        }
+      } catch (e) {
+        console.error(`[BB-API] curl error (${channel}):`, e.message?.substring(0, 100));
       }
     }
 
     return {
       success: false,
-      error: 'All OTP endpoints failed. Capture fresh traffic from BigBasket app.',
+      error: 'OTP sending is temporarily blocked (rate limited). Please wait 10-15 minutes and try again.',
     };
   }
 
   /**
    * Verify OTP via unified-login endpoint
-   * CONFIRMED from HTTP Toolkit capture: POST /member-tdl/v3/member/unified-login/
-   * Returns 400 with "Please Enter Valid OTP." (code HU4011) on wrong OTP
-   * Returns 200 with JWT access token on success
+   * CONFIRMED from live testing: POST /member-tdl/v3/member/otp/
+   * With type="verify" - returns 500 on wrong OTP (server crash), 200 with JWT on correct OTP
+   * Also try unified-login as fallback
    */
   async verifyOTP(phoneNumber, otp) {
+    const cleanPhone = phoneNumber.replace(/^\+91/, '').replace(/[^0-9]/g, '');
+    const { execSync } = require('child_process');
+    const { v4: uuidv4 } = require('uuid');
+
     const attempts = [
-      // CONFIRMED: /member-tdl/v3/member/unified-login/ (from HTTP Toolkit capture 2026-05-19)
-      {
-        url: ENDPOINTS.AUTH.VERIFY_OTP,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          otp: otp,
-          type: 'otp',
-          action: 'verify_otp',
-        },
-      },
-      // Same endpoint, different format
-      {
-        url: ENDPOINTS.AUTH.VERIFY_OTP,
-        payload: {
-          loginId: phoneNumber,
-          loginType: 'otp',
-          otp: otp,
-          action: 'verify',
-        },
-      },
-      // Same endpoint, minimal
-      {
-        url: ENDPOINTS.AUTH.VERIFY_OTP,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          otp: otp,
-        },
-      },
-      // Fallback: try the OTP endpoint for verify
-      {
-        url: ENDPOINTS.AUTH.OTP_ENDPOINT,
-        payload: {
-          login_id: phoneNumber,
-          login_type: 2,
-          otp: otp,
-          type: 'otp',
-          action: 'verify_otp',
-        },
-      },
+      { url: '/member-tdl/v3/member/otp/', payload: { identifier: cleanPhone, otp, channel: 'sms', type: 'verify' } },
+      { url: '/member-tdl/v3/member/otp/', payload: { identifier: cleanPhone, code: otp, channel: 'sms', type: 'verify' } },
+      { url: '/member-tdl/v3/member/unified-login/', payload: { identifier: cleanPhone, otp, channel: 'sms', type: 'verify' } },
     ];
 
     for (const attempt of attempts) {
       try {
-        console.log(`[BB-API] Trying verify endpoint: ${attempt.url}`);
-        const response = await this.client.post(attempt.url, attempt.payload);
-        const data = response.data;
+        const payload = JSON.stringify(attempt.payload);
+        const tracker = uuidv4();
 
-        // Extract token from response (BigBasket uses various field names)
-        const accessToken = data.access_token || data.token || data.auth_token || 
-                           data.member?.access_token || data.data?.access_token ||
-                           data.response?.access_token;
+        const curlCmd = `curl -s -X POST 'https://www.bigbasket.com${attempt.url}' ` +
+          `-H 'Content-Type: application/json' ` +
+          `-H 'Accept: application/json' ` +
+          `-H 'User-Agent: Dalvik/2.1.0 (Linux; U; Android 13; SM-S911B Build/TP1A.220624.014)' ` +
+          `-H 'X-Channel: BB-Android' ` +
+          `-H 'X-Caller: app' ` +
+          `-H 'X-App-Version: 8.29.1' ` +
+          `-H 'X-Build-Version: 25110910' ` +
+          `-H 'X-Tracker: ${tracker}' ` +
+          `-H 'X-Entry-Context: hp' ` +
+          `-H 'X-Entry-Context-Id: 1' ` +
+          `-d '${payload}' -w '\\n%{http_code}' --max-time 15`;
 
-        if (accessToken) {
-          const jwtPayload = this._decodeJWT(accessToken);
-          const memberId = jwtPayload?.mid || data.member_id || data.user_id || data.mid;
-          const visitorId = jwtPayload?.vid ? String(jwtPayload.vid) : (data.visitor_id || this.visitorId);
-          const refreshToken = jwtPayload?.refresh_token || data.refresh_token;
-          const userName = data.name || data.user_name || data.member?.name || data.first_name || 'User';
+        console.log(`[BB-API] Verify OTP via curl: ${attempt.url} payload: ${payload}`);
+        const output = execSync(curlCmd, { encoding: 'utf-8', timeout: 20000 });
+        const lines = output.trim().split('\n');
+        const httpCode = parseInt(lines[lines.length - 1]);
+        const body = lines.slice(0, -1).join('\n').trim();
 
-          console.log(`[BB-API] Auth successful | mid=${memberId} vid=${visitorId}`);
-          return {
-            success: true,
-            data: { accessToken, refreshToken, memberId: String(memberId || ''), visitorId, userName },
-          };
-        }
+        console.log(`[BB-API] Verify response: HTTP ${httpCode} - ${body.substring(0, 300)}`);
 
-        // Check if response indicates success with different structure
-        if (data.status === 'success' || data.success === true || data.status === 0) {
-          const nestedToken = data.token || data.session_token || data.data?.token;
-          const jwtPayload = nestedToken ? this._decodeJWT(nestedToken) : null;
+        if (httpCode === 200) {
+          let data = {};
+          try { data = JSON.parse(body); } catch (e) {}
+
+          // Extract token
+          const accessToken = data.access_token || data.token || data.auth_token ||
+                             data.member?.access_token || data.data?.access_token;
+
+          if (accessToken) {
+            const jwtPayload = this._decodeJWT(accessToken);
+            return {
+              success: true,
+              data: {
+                accessToken,
+                refreshToken: jwtPayload?.refresh_token || data.refresh_token || null,
+                memberId: String(jwtPayload?.mid || data.member_id || ''),
+                visitorId: jwtPayload?.vid ? String(jwtPayload.vid) : this.visitorId,
+                userName: data.name || data.user_name || data.member?.name || 'User',
+              },
+            };
+          }
+
+          // Success without explicit token
           return {
             success: true,
             data: {
-              accessToken: nestedToken || 'session_token',
-              refreshToken: jwtPayload?.refresh_token || null,
-              memberId: String(jwtPayload?.mid || data.member_id || ''),
-              visitorId: jwtPayload?.vid ? String(jwtPayload.vid) : this.visitorId,
+              accessToken: data.token || data.session_token || 'session_token',
+              refreshToken: null,
+              memberId: data.member_id || '',
+              visitorId: this.visitorId,
               userName: data.name || 'User',
             },
           };
         }
-      } catch (error) {
-        const status = error.response?.status;
-        const errorData = error.response?.data;
-        console.log(`[BB-API] Verify ${attempt.url} failed: ${status}`);
-        
-        if (status && status !== 404 && status !== 405 && errorData?.message) {
-          return {
-            success: false,
-            error: errorData.message || `Verification failed (HTTP ${status})`,
-          };
+
+        if (httpCode === 400) {
+          let errorData = {};
+          try { errorData = JSON.parse(body); } catch (e) {}
+          const errors = errorData.errors || [];
+          const errorCode = errors[0]?.code_str || '';
+          const errorMsg = errors[0]?.msg || errors[0]?.display_msg || '';
+
+          if (errorCode === 'HU4011') {
+            return { success: false, error: errorMsg || 'Invalid OTP. Please try again.' };
+          }
+          if (errorCode && errorCode !== 'HU4000') {
+            return { success: false, error: errorMsg || `Verification failed: ${errorCode}` };
+          }
+          // HU4000 = wrong format, try next
         }
+
+        if (httpCode === 500) {
+          return { success: false, error: 'Invalid OTP. Please check the code and try again.' };
+        }
+      } catch (e) {
+        console.error(`[BB-API] Verify curl error:`, e.message?.substring(0, 100));
       }
     }
 
-    return {
-      success: false,
-      error: 'OTP verification failed. Check OTP and try /login again.',
-    };
+    return { success: false, error: 'OTP verification failed. Please try again.' };
   }
 
   /**
